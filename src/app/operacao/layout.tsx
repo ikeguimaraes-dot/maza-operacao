@@ -2,7 +2,7 @@ import { AuthProvider } from "@kph/auth/context";
 import { requireUser } from "@kph/auth/server";
 import { createSupabaseServerClient } from "@kph/db/supabase/server";
 import type { Unit } from "@kph/db/types/database";
-import { OperacaoNav } from "@/components/shell/OperacaoNav";
+import { Sidebar } from "@kph/ui/sidebar";
 
 export const dynamic = "force-dynamic";
 
@@ -14,8 +14,8 @@ export default async function OperacaoLayout({
 
   return (
     <AuthProvider user={user} units={units}>
-      <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
-        <OperacaoNav />
+      <div style={{ display: "flex", height: "100vh" }}>
+        <Sidebar />
         <main style={{ flex: 1, overflowY: "auto", padding: "32px 28px" }}>
           {children}
         </main>

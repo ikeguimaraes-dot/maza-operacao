@@ -315,7 +315,7 @@ export function Sidebar() {
           </div>
         </div>
 
-        <SidebarNav pathname={pathname} />
+        <SidebarNav pathname={pathname} activeUnitId={unit?.id ?? null} />
 
         <div
           style={{
@@ -372,8 +372,10 @@ export function Sidebar() {
   );
 }
 
+const MEET_AND_EAT = "674eac8c-5a38-4a42-aa60-0a666387909b";
+
 // ── Sub: nav com grupos colapsáveis ────────────────────────────
-function SidebarNav({ pathname }: { pathname: string }) {
+function SidebarNav({ pathname, activeUnitId }: { pathname: string; activeUnitId: string | null }) {
   const activeHref = useMemo(() => {
     let bestHref: string | null = null;
     let bestLen = -1;
@@ -486,6 +488,7 @@ function SidebarNav({ pathname }: { pathname: string }) {
             )}
             {isOpen &&
               g.items.map((it) => {
+                if (it.href === "/operacao/eventos" && activeUnitId !== MEET_AND_EAT) return null;
                 const Icon = it.icon;
                 const active = it.href === activeHref;
                 return (

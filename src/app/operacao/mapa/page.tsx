@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 import { requireUser } from "@kph/auth/server";
 import { getCurrentUnit } from "@kph/auth/unit";
+import { createSupabaseServerClient } from "@kph/db/supabase/server";
 import { listRestaurantTables } from "./actions";
 import { MapaClient } from "./mapa-client";
 
@@ -10,6 +11,9 @@ export default async function MapaPage() {
   await requireUser();
   return (
     <div style={{ maxWidth: 1180, margin: "0 auto" }}>
+      <Suspense fallback={null}>
+        <OperacaoInsightPanel />
+      </Suspense>
       <header style={{ marginBottom: 20 }}>
         <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1.6, textTransform: "uppercase", color: "var(--text-3)" }}>
           Operação · Mapa da Casa
@@ -26,6 +30,68 @@ export default async function MapaPage() {
       </Suspense>
     </div>
   );
+}
+
+async function OperacaoInsightPanel() {
+  try {
+    const supabase = await createSupabaseServerClient();
+    if (!supabase) return null;
+
+    const today = new Date().toISOString().split("T")[0];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { data } = await (supabase as any)
+      .from("kph_insights")
+      .select("insight, score, created_at")
+      .eq("modulo", "operacao")
+      .gte("created_at", today)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (!data) return null;
+
+    const score = typeof data.score === "number" ? data.score : null;
+    const scoreColor =
+      score === null ? "var(--text-3)"
+      : score >= 80 ? "#15803D"
+      : score >= 60 ? "#A16207"
+      : "#B91C1C";
+
+    return (
+      <div style={{ marginBottom: 16 }}>
+        <div style={{
+          display: "flex",
+          alignItems: "flex-start",
+          gap: 14,
+          padding: "14px 18px",
+          background: "var(--surface)",
+          border: "1px solid var(--border)",
+          borderRadius: 10,
+        }}>
+          <div style={{ flexShrink: 0, marginTop: 2 }}>
+            <span style={{ fontSize: 18 }}>🤖</span>
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+              <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: "var(--text-3)" }}>
+                IA · Operação · Hoje
+              </span>
+              {score !== null && (
+                <span style={{ fontSize: 10, fontWeight: 700, color: scoreColor }}>
+                  Score {score}/100
+                </span>
+              )}
+            </div>
+            <p style={{ fontSize: 13, color: "var(--text-2)", margin: 0, lineHeight: 1.55 }}>
+              {data.insight}
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  } catch {
+    return null;
+  }
 }
 
 async function MapaSection() {

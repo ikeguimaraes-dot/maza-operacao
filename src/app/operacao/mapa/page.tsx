@@ -41,7 +41,7 @@ async function OperacaoInsightPanel() {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const { data } = await (supabase as any)
       .from("kph_insights")
-      .select("insight, score, created_at")
+      .select("insight_text, dados_referencia, created_at")
       .eq("modulo", "operacao")
       .gte("created_at", today)
       .order("created_at", { ascending: false })
@@ -50,7 +50,7 @@ async function OperacaoInsightPanel() {
 
     if (!data) return null;
 
-    const score = typeof data.score === "number" ? data.score : null;
+    const score = typeof data.dados_referencia?.score === "number" ? data.dados_referencia.score : null;
     const scoreColor =
       score === null ? "var(--text-3)"
       : score >= 80 ? "#15803D"
@@ -83,7 +83,7 @@ async function OperacaoInsightPanel() {
               )}
             </div>
             <p style={{ fontSize: 13, color: "var(--text-2)", margin: 0, lineHeight: 1.55 }}>
-              {data.insight}
+              {data.insight_text}
             </p>
           </div>
         </div>

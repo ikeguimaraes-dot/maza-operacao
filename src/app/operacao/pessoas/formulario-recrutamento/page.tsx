@@ -14,7 +14,7 @@ export default async function FormularioRecrutamentoPage() {
 
   return (
     <iframe
-      src="/formulario-recrutamento/index.html"
+      src="/operacao/formulario-recrutamento/index.html"
       style={{ width: "100%", height: "calc(100vh - 56px)", border: "none" }}
       title="Formulário de Recrutamento"
     />

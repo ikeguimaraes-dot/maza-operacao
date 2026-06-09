@@ -448,7 +448,8 @@ Não há webhooks, payment gateways, e-mail providers ou serviços de terceiros 
 - A página `/operacao/eventos` é **exclusiva da unidade Meet & Eat**.
 - O ID da unit está hardcoded: `MEET_AND_EAT = "674eac8c-5a38-4a42-aa60-0a666387909b"`.
 - Qualquer outra unit acessa essa rota e é redirecionada para `/operacao`.
-- O conteúdo é uma SPA embarcada via `<iframe src="/eventos/index.html">`.
+- O conteúdo é uma SPA embarcada via `<iframe src="/operacao/eventos/index.html">`.
+- O arquivo estático está em `public/operacao/eventos/index.html` — dentro do prefixo `/operacao` para ser alcançado pelo rewrite do shell.
 
 ### 9.4 Merge de Reservas no Mapa
 - `listRestaurantTables()` faz **duas queries paralelas** com `Promise.all`:
@@ -478,12 +479,12 @@ Não há webhooks, payment gateways, e-mail providers ou serviços de terceiros 
 
 ### 9.8 SPA Formulário de Recrutamento
 - Assim como `/operacao/eventos`, esta rota serve uma SPA Vite buildada via `<iframe>`.
-- O build está em `public/formulario-recrutamento/index.html` (buildado do repo `formulario-recrutamento`, Vite + React 18 + Tailwind 3).
+- O build está em `public/operacao/formulario-recrutamento/index.html` — dentro do prefixo `/operacao` para ser alcançado pelo rewrite do shell.
+- Buildado do repo `https://github.com/ikeguimaraes-dot/formulario-recrutamento.git` (Vite + React 18 + Tailwind 3).
 - O banco de dados é o mesmo Supabase do projeto principal — tabela `job_requisitions` (schema em `supabase_schema.sql` do repo original).
-- Restrito aos roles: `"pessoas"`, `"gm"`, `"founder"` — verificado tanto na page.tsx (server-side redirect) quanto na Sidebar (oculta o item para demais roles).
-- O Sidebar usa o campo `roles?: string[]` do `NavItem` para filtrar visibilidade no client; o `SidebarNav` recebe `userRoles` como prop do `Sidebar`.
-- Variáveis de ambiente embutidas no build: `VITE_SUPABASE_URL` e `VITE_SUPABASE_ANON_KEY` (mesmo Supabase da holding). `VITE_EMAILJS_*` são opcionais — envio de e-mail é graciosamente ignorado se ausentes.
-- Para rebuildar a SPA: clonar `https://github.com/ikeguimaraes-dot/formulario-recrutamento.git`, adicionar `.env` com as vars acima, setar `base: '/formulario-recrutamento/'` no `vite.config.js`, rodar `npm run build` e copiar `dist/` para `public/formulario-recrutamento/`.
+- Restrito aos roles: `"pessoas"`, `"gm"`, `"founder"` — verificado na page.tsx (server-side redirect) e na Sidebar (item oculto via `roles` no `NavItem`).
+- Variáveis de ambiente embutidas no build: `VITE_SUPABASE_URL` e `VITE_SUPABASE_ANON_KEY` (projeto `iqgrvptrtphvbmvrqntm`). `VITE_EMAILJS_*` são opcionais.
+- Para rebuildar a SPA: clonar o repo, criar `.env` com as vars acima, setar `base: '/operacao/formulario-recrutamento/'` no `vite.config.js`, rodar `npm run build` e copiar `dist/` para `public/operacao/formulario-recrutamento/`.
 
 ---
 

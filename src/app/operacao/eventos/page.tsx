@@ -9,7 +9,7 @@ export default async function EventosPage() {
 
   return (
     <iframe
-      src="/eventos/index.html"
+      src="/operacao/eventos/index.html"
       style={{ width: "100%", height: "calc(100vh - 64px)", border: "none" }}
       title="Gestão de Eventos"
     />

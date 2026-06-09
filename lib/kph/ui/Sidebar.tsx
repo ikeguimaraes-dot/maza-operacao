@@ -26,15 +26,16 @@ import {
   Brain, Target, LineChart, Layers, Bug, Map, BarChart3, Workflow
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { useAuth, useUnit } from "@kph/auth/context";
+import { useAuth, useUnit, useHasRole, useRoles } from "@kph/auth/context";
 
-type NavItem = { href: string; label: string; icon: LucideIcon };
+type NavItem = { href: string; label: string; icon: LucideIcon; roles?: string[] };
 type NavGroup = {
   id: string;
   title: string | null;
   icon: LucideIcon | null;
   items: NavItem[];
   defaultOpen: boolean;
+  roles?: string[];
 };
 
 const NAV_GROUPS: NavGroup[] = [
@@ -58,6 +59,16 @@ const NAV_GROUPS: NavGroup[] = [
       { href: "/operacao/vendedores",    label: "Vendedores",    icon: UserCheck },
       { href: "/operacao/auditorias",    label: "Auditorias",    icon: ClipboardList },
       { href: "/operacao/eventos",       label: "Eventos",       icon: CalendarDays },
+    ],
+  },
+  {
+    id: "pessoas-op",
+    title: "Pessoas",
+    icon: Users,
+    defaultOpen: true,
+    roles: ["pessoas", "gm", "founder"],
+    items: [
+      { href: "/operacao/pessoas/formulario-recrutamento", label: "Formulário de Recrutamento", icon: ClipboardList },
     ],
   },
   {
@@ -446,95 +457,123 @@ function SidebarNav({ pathname, activeUnitId }: { pathname: string; activeUnitId
         overflowY: "auto",
       }}
     >
-      {NAV_GROUPS.map((g) => {
-        const isOpen = openMap[g.id] ?? g.defaultOpen;
-        return (
-          <div key={g.id} style={{ display: "flex", flexDirection: "column", gap: 1 }}>
-            {g.title && (
-              <button
-                type="button"
-                onClick={() => toggleGroup(g.id)}
-                aria-expanded={isOpen}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  width: "100%",
-                  background: "transparent",
-                  border: "none",
-                  padding: "10px 8px 4px",
-                  fontSize: 10,
-                  fontWeight: 700,
-                  letterSpacing: 1.2,
-                  textTransform: "uppercase",
-                  color: "var(--text-3)",
-                  cursor: "pointer",
-                  textAlign: "left",
-                }}
-              >
-                {g.icon && (
-                  <g.icon size={11} style={{ color: "var(--text-3)" }} />
-                )}
-                <span style={{ flex: 1 }}>{g.title}</span>
-                <ChevronRight
-                  size={12}
+      {NAV_GROUPS.map((g) => (
+        <NavGroupSection
+          key={g.id}
+          group={g}
+          activeHref={activeHref}
+          activeUnitId={activeUnitId}
+          isOpen={openMap[g.id] ?? g.defaultOpen}
+          hydrated={hydrated}
+          onToggle={() => toggleGroup(g.id)}
+        />
+      ))}
+    </nav>
+  );
+}
+
+function NavGroupSection({
+  group: g,
+  activeHref,
+  activeUnitId,
+  isOpen,
+  hydrated,
+  onToggle,
+}: {
+  group: NavGroup;
+  activeHref: string | null;
+  activeUnitId: string | null;
+  isOpen: boolean;
+  hydrated: boolean;
+  onToggle: () => void;
+}) {
+  const hasRole = useHasRole(g.roles ?? []);
+  const userRoles = useRoles().map((r): string => r.role);
+  if (g.roles && !hasRole) return null;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+      {g.title && (
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={isOpen}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            width: "100%",
+            background: "transparent",
+            border: "none",
+            padding: "10px 8px 4px",
+            fontSize: 10,
+            fontWeight: 700,
+            letterSpacing: 1.2,
+            textTransform: "uppercase",
+            color: "var(--text-3)",
+            cursor: "pointer",
+            textAlign: "left",
+          }}
+        >
+          {g.icon && <g.icon size={11} style={{ color: "var(--text-3)" }} />}
+          <span style={{ flex: 1 }}>{g.title}</span>
+          <ChevronRight
+            size={12}
+            style={{
+              color: "var(--text-3)",
+              transform: isOpen ? "rotate(90deg)" : "none",
+              transition: hydrated ? "transform var(--t)" : "none",
+            }}
+          />
+        </button>
+      )}
+      {isOpen &&
+        g.items.map((it) => {
+          if (it.href === "/operacao/eventos" && activeUnitId !== MEET_AND_EAT) return null;
+          if (it.roles && !it.roles.some((r) => userRoles.includes(r))) return null;
+          const Icon = it.icon;
+          const active = it.href === activeHref;
+          return (
+            <Link
+              key={it.href}
+              href={it.href}
+              style={{
+                position: "relative",
+                display: "flex",
+                alignItems: "center",
+                gap: 12,
+                padding: "9px 12px",
+                borderRadius: 8,
+                textDecoration: "none",
+                color: active ? "var(--text)" : "var(--text-2)",
+                background: active ? "var(--surface-2)" : "transparent",
+                fontSize: 13,
+                fontWeight: active ? 600 : 500,
+                transition: "all var(--t)",
+              }}
+            >
+              {active && (
+                <span
                   style={{
-                    color: "var(--text-3)",
-                    transform: isOpen ? "rotate(90deg)" : "none",
-                    transition: hydrated ? "transform var(--t)" : "none",
+                    position: "absolute",
+                    left: -12,
+                    top: 6,
+                    bottom: 6,
+                    width: 3,
+                    background: "var(--brand)",
+                    borderRadius: "0 4px 4px 0",
                   }}
                 />
-              </button>
-            )}
-            {isOpen &&
-              g.items.map((it) => {
-                if (it.href === "/operacao/eventos" && activeUnitId !== MEET_AND_EAT) return null;
-                const Icon = it.icon;
-                const active = it.href === activeHref;
-                return (
-                  <Link
-                    key={it.href}
-                    href={it.href}
-                    style={{
-                      position: "relative",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 12,
-                      padding: "9px 12px",
-                      borderRadius: 8,
-                      textDecoration: "none",
-                      color: active ? "var(--text)" : "var(--text-2)",
-                      background: active ? "var(--surface-2)" : "transparent",
-                      fontSize: 13,
-                      fontWeight: active ? 600 : 500,
-                      transition: "all var(--t)",
-                    }}
-                  >
-                    {active && (
-                      <span
-                        style={{
-                          position: "absolute",
-                          left: -12,
-                          top: 6,
-                          bottom: 6,
-                          width: 3,
-                          background: "var(--brand)",
-                          borderRadius: "0 4px 4px 0",
-                        }}
-                      />
-                    )}
-                    <Icon
-                      size={16}
-                      strokeWidth={active ? 2.2 : 1.8}
-                      style={{ color: active ? "var(--brand)" : "currentColor" }}
-                    />
-                    <span style={{ flex: 1 }}>{it.label}</span>
-                  </Link>
-                );
-              })}
-          </div>
-        );
-      })}
-    </nav>
+              )}
+              <Icon
+                size={16}
+                strokeWidth={active ? 2.2 : 1.8}
+                style={{ color: active ? "var(--brand)" : "currentColor" }}
+              />
+              <span style={{ flex: 1 }}>{it.label}</span>
+            </Link>
+          );
+        })}
+    </div>
   );
 }

@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   // shell
-  ChevronDown, ChevronRight, Check, LogOut, Circle,
+  ChevronDown, ChevronRight, Check, LogOut,
   // dashboard
   LayoutDashboard,
   // operacao
@@ -28,45 +28,7 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { useAuth, useUnit, useHasRole, useRoles } from "@kph/auth/context";
 
-// ── Icon map ────────────────────────────────────────────
-// Resolve icon name strings from /api/nav into LucideIcon components.
-// Falls back to Circle for unknown names.
-const ICON_MAP: Record<string, LucideIcon> = {
-  Circle, LayoutDashboard,
-  TrendingUp, MapPin, Activity, UserCheck, ClipboardList, BookOpen,
-  ShoppingCart, Package, Truck, Building2, FileText, PackageCheck, PieChart, Star, Carrot,
-  Wallet, Gauge, ArrowLeftRight, Sheet, CreditCard, Banknote, CheckSquare, RefreshCw, PiggyBank,
-  Users, User, Briefcase, CalendarDays, Clock, Plane, CalendarX2, Timer,
-  ShieldAlert, Receipt, DollarSign, Bus, GraduationCap, ClipboardCheck,
-  FolderOpen, Upload, FileBarChart2, MessageCircle, Repeat2, LayoutGrid, ListChecks, CalendarClock,
-  Network, UserPlus, BarChart2, Handshake, MessageSquare, CalendarCheck, Bot, Megaphone, Filter,
-  Bookmark, Info, Globe, Award, Brain, Target, LineChart, Layers, Bug, Map, BarChart3, Workflow,
-};
-
-function resolveIcon(name: string | null | undefined): LucideIcon {
-  if (!name) return Circle;
-  return ICON_MAP[name] ?? Circle;
-}
-
-// ── API types (icons arrive as strings) ─────────────────
-type ApiNavItem = {
-  href: string;
-  label: string;
-  icon: string;
-  roles?: string[];
-  children?: ApiNavItem[];
-};
-type ApiNavGroup = {
-  id: string;
-  title: string | null;
-  icon: string | null;
-  defaultOpen: boolean;
-  roles?: string[];
-  items: ApiNavItem[];
-};
-type ApiNavResponse = { groups: ApiNavGroup[] };
-
-// ── Internal types (icons resolved to LucideIcon) ───────
+// ── Types ───────────────────────────────────────────────
 type NavItem = {
   href: string;
   label: string;
@@ -83,28 +45,8 @@ type NavGroup = {
   roles?: string[];
 };
 
-function resolveApiItem(it: ApiNavItem): NavItem {
-  return {
-    href: it.href,
-    label: it.label,
-    icon: resolveIcon(it.icon),
-    roles: it.roles,
-    children: it.children?.map(resolveApiItem),
-  };
-}
-function resolveApiGroups(raw: ApiNavGroup[]): NavGroup[] {
-  return raw.map((g) => ({
-    id: g.id,
-    title: g.title,
-    icon: g.icon ? resolveIcon(g.icon) : null,
-    defaultOpen: g.defaultOpen,
-    roles: g.roles,
-    items: g.items.map(resolveApiItem),
-  }));
-}
-
-// ── Hardcoded fallback (used when /api/nav is unreachable) ──
-const NAV_GROUPS_FALLBACK: NavGroup[] = [
+// ── Nav data ────────────────────────────────────────────
+const NAV_GROUPS: NavGroup[] = [
   {
     id: "home",
     title: null,
@@ -240,6 +182,15 @@ const NAV_GROUPS_FALLBACK: NavGroup[] = [
   },
 ];
 
+// Flatten all hrefs (including children) for active-state computation
+function flatItems(items: NavItem[], groupId: string): { href: string; groupId: string }[] {
+  return items.flatMap((it) => [
+    { href: it.href, groupId },
+    ...(it.children ? flatItems(it.children, groupId) : []),
+  ]);
+}
+const ALL_NAV_ITEMS = NAV_GROUPS.flatMap((g) => flatItems(g.items, g.id));
+
 const STORAGE_KEY = "kph_sidebar_groups";
 const MEET_AND_EAT = "674eac8c-5a38-4a42-aa60-0a666387909b";
 
@@ -266,9 +217,7 @@ export function Sidebar() {
     return () => window.removeEventListener("kph:toggleSidebar", onToggle);
   }, []);
 
-  useEffect(() => {
-    setMobileOpen(false);
-  }, [pathname]);
+  useEffect(() => { setMobileOpen(false); }, [pathname]);
 
   const initials = user?.email?.slice(0, 2).toUpperCase() ?? "?";
   const emailShort = user?.email
@@ -278,17 +227,10 @@ export function Sidebar() {
 
   return (
     <>
-      <div
-        className={`shell-backdrop ${mobileOpen ? "open" : ""}`}
-        onClick={() => setMobileOpen(false)}
-      />
+      <div className={`shell-backdrop ${mobileOpen ? "open" : ""}`} onClick={() => setMobileOpen(false)} />
       <aside
         className={`shell-sidebar ${mobileOpen ? "open" : ""}`}
-        style={{
-          width: 240, flexShrink: 0,
-          background: "var(--sidebar)", borderRight: "1px solid var(--sidebar-border)",
-          display: "flex", flexDirection: "column",
-        }}
+        style={{ width: 240, flexShrink: 0, background: "var(--sidebar)", borderRight: "1px solid var(--sidebar-border)", display: "flex", flexDirection: "column" }}
       >
         {/* Logo */}
         <div style={{ padding: "20px 16px 16px", borderBottom: "1px solid var(--sidebar-border)" }}>
@@ -306,46 +248,25 @@ export function Sidebar() {
             <button
               onClick={() => setOpen((v) => !v)}
               disabled={units.length === 0}
-              style={{
-                width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between",
-                background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 10,
-                padding: "9px 12px", color: "var(--text)", fontSize: 13, fontWeight: 600,
-                cursor: units.length ? "pointer" : "default", transition: "border-color var(--t)",
-              }}
+              style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 10, padding: "9px 12px", color: "var(--text)", fontSize: 13, fontWeight: 600, cursor: units.length ? "pointer" : "default", transition: "border-color var(--t)" }}
             >
               <span style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 1, minWidth: 0 }}>
-                <span style={{ fontSize: 9, color: "var(--text-3)", fontWeight: 700, letterSpacing: 0.8 }}>
-                  UNIDADE
-                </span>
+                <span style={{ fontSize: 9, color: "var(--text-3)", fontWeight: 700, letterSpacing: 0.8 }}>UNIDADE</span>
                 <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 160 }}>
                   {unit?.name ?? (units.length ? "Selecionar…" : "Sem acesso")}
                 </span>
               </span>
-              <ChevronDown
-                size={14}
-                style={{ color: "var(--text-3)", transform: open ? "rotate(180deg)" : "none", transition: "transform var(--t)" }}
-              />
+              <ChevronDown size={14} style={{ color: "var(--text-3)", transform: open ? "rotate(180deg)" : "none", transition: "transform var(--t)" }} />
             </button>
             {open && units.length > 0 && (
-              <div style={{
-                position: "absolute", top: "calc(100% + 6px)", left: 0, right: 0, zIndex: 50,
-                background: "var(--surface-2)", border: "1px solid var(--border-strong)",
-                borderRadius: 10, padding: 4, boxShadow: "var(--shadow-lg)",
-              }}>
+              <div style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, right: 0, zIndex: 50, background: "var(--surface-2)", border: "1px solid var(--border-strong)", borderRadius: 10, padding: 4, boxShadow: "var(--shadow-lg)" }}>
                 {units.map((u) => {
                   const active = u.id === unit?.id;
                   return (
                     <button
                       key={u.id}
                       onClick={() => { setUnit(u.id); setOpen(false); }}
-                      style={{
-                        width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between",
-                        gap: 8, padding: "9px 10px",
-                        background: active ? "var(--surface-3)" : "transparent",
-                        border: "none", borderRadius: 6, color: "var(--text)",
-                        fontSize: 13, fontWeight: 500, cursor: "pointer",
-                        textAlign: "left", transition: "background var(--t)",
-                      }}
+                      style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "9px 10px", background: active ? "var(--surface-3)" : "transparent", border: "none", borderRadius: 6, color: "var(--text)", fontSize: 13, fontWeight: 500, cursor: "pointer", textAlign: "left", transition: "background var(--t)" }}
                     >
                       <span>{u.name}</span>
                       {active && <Check size={14} style={{ color: "var(--brand)" }} />}
@@ -357,7 +278,6 @@ export function Sidebar() {
           </div>
         </div>
 
-        {/* Nav */}
         <SidebarNav pathname={pathname} activeUnitId={unit?.id ?? null} />
 
         {/* User footer */}
@@ -369,9 +289,7 @@ export function Sidebar() {
             <span style={{ position: "absolute", right: -1, bottom: -1, width: 10, height: 10, borderRadius: 99, background: "#22C55E", border: "2px solid var(--sidebar)" }} />
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {emailShort}
-            </div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{emailShort}</div>
             <div style={{ fontSize: 10, color: "var(--text-3)" }}>{role}</div>
           </div>
           <Link href="/auth/sign-out" title="Sair" style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 28, height: 28, borderRadius: 6, color: "var(--text-3)", textDecoration: "none", transition: "color var(--t), background var(--t)" }}>
@@ -383,88 +301,40 @@ export function Sidebar() {
   );
 }
 
-// ── SidebarNav: fetches /api/nav, falls back to NAV_GROUPS_FALLBACK ──
+// ── SidebarNav ──────────────────────────────────────────
 function SidebarNav({ pathname, activeUnitId }: { pathname: string; activeUnitId: string | null }) {
-  const [groups, setGroups] = useState<NavGroup[]>(NAV_GROUPS_FALLBACK);
-
-  // Fetch from shell — runs once on mount, falls back silently on error
-  useEffect(() => {
-    const shellUrl = process.env.NEXT_PUBLIC_SHELL_URL;
-    if (!shellUrl) return;
-    let cancelled = false;
-
-    fetch(`${shellUrl}/api/nav`)
-      .then((r) => (r.ok ? (r.json() as Promise<ApiNavResponse>) : null))
-      .then((data) => {
-        if (cancelled || !data?.groups?.length) return;
-        const resolved = resolveApiGroups(data.groups);
-        setGroups(resolved);
-        // Seed openMap for any new group IDs not yet in localStorage
-        setOpenMap((prev) => {
-          const next = { ...prev };
-          for (const g of resolved) {
-            if (!(g.id in next)) next[g.id] = g.defaultOpen;
-          }
-          return next;
-        });
-      })
-      .catch(() => { /* silently use fallback */ });
-
-    return () => { cancelled = true; };
-  }, []);
-
-  // Flatten all hrefs (including children) for active-state computation
-  const allNavItems = useMemo(() => {
-    function flatItems(items: NavItem[], groupId: string): { href: string; groupId: string }[] {
-      return items.flatMap((it) => [
-        { href: it.href, groupId },
-        ...(it.children ? flatItems(it.children, groupId) : []),
-      ]);
-    }
-    return groups.flatMap((g) => flatItems(g.items, g.id));
-  }, [groups]);
-
-  // Best (longest prefix) matching href
   const activeHref = useMemo(() => {
     let best: string | null = null;
     let bestLen = -1;
-    for (const it of allNavItems) {
+    for (const it of ALL_NAV_ITEMS) {
       const matches = pathname === it.href || pathname.startsWith(it.href + "/");
-      if (matches && it.href.length > bestLen) {
-        best = it.href;
-        bestLen = it.href.length;
-      }
+      if (matches && it.href.length > bestLen) { best = it.href; bestLen = it.href.length; }
     }
     return best;
-  }, [pathname, allNavItems]);
+  }, [pathname]);
 
   const activeGroupId = useMemo(() => {
     if (!activeHref) return null;
-    return allNavItems.find((it) => it.href === activeHref)?.groupId ?? null;
-  }, [activeHref, allNavItems]);
+    return ALL_NAV_ITEMS.find((it) => it.href === activeHref)?.groupId ?? null;
+  }, [activeHref]);
 
   const [openMap, setOpenMap] = useState<Record<string, boolean>>(() => {
     const m: Record<string, boolean> = {};
-    for (const g of NAV_GROUPS_FALLBACK) m[g.id] = g.defaultOpen;
+    for (const g of NAV_GROUPS) m[g.id] = g.defaultOpen;
     return m;
   });
   const [hydrated, setHydrated] = useState(false);
 
-  // Restore open state from localStorage
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
       const raw = window.localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as Record<string, boolean>;
-        setOpenMap((prev) => ({ ...prev, ...parsed }));
-      }
+      if (raw) setOpenMap((prev) => ({ ...prev, ...(JSON.parse(raw) as Record<string, boolean>) }));
     } catch { /* ignore corruption */ }
     setHydrated(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Auto-open the group containing the active page
   useEffect(() => {
     if (!activeGroupId) return;
     setOpenMap((prev) => (prev[activeGroupId] ? prev : { ...prev, [activeGroupId]: true }));
@@ -480,7 +350,7 @@ function SidebarNav({ pathname, activeUnitId }: { pathname: string; activeUnitId
 
   return (
     <nav style={{ flex: 1, padding: "8px 12px", display: "flex", flexDirection: "column", gap: 4, overflowY: "auto" }}>
-      {groups.map((g) => (
+      {NAV_GROUPS.map((g) => (
         <NavGroupSection
           key={g.id}
           group={g}
@@ -495,21 +365,12 @@ function SidebarNav({ pathname, activeUnitId }: { pathname: string; activeUnitId
   );
 }
 
-// ── NavGroupSection: renders one collapsible group ──────
+// ── NavGroupSection ─────────────────────────────────────
 function NavGroupSection({
-  group: g,
-  activeHref,
-  activeUnitId,
-  isOpen,
-  hydrated,
-  onToggle,
+  group: g, activeHref, activeUnitId, isOpen, hydrated, onToggle,
 }: {
-  group: NavGroup;
-  activeHref: string | null;
-  activeUnitId: string | null;
-  isOpen: boolean;
-  hydrated: boolean;
-  onToggle: () => void;
+  group: NavGroup; activeHref: string | null; activeUnitId: string | null;
+  isOpen: boolean; hydrated: boolean; onToggle: () => void;
 }) {
   const hasRole = useHasRole(g.roles ?? []);
   const userRoles = useRoles().map((r): string => r.role);
@@ -522,23 +383,11 @@ function NavGroupSection({
           type="button"
           onClick={onToggle}
           aria-expanded={isOpen}
-          style={{
-            display: "flex", alignItems: "center", gap: 8, width: "100%",
-            background: "transparent", border: "none", padding: "10px 8px 4px",
-            fontSize: 10, fontWeight: 700, letterSpacing: 1.2, textTransform: "uppercase",
-            color: "var(--text-3)", cursor: "pointer", textAlign: "left",
-          }}
+          style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", background: "transparent", border: "none", padding: "10px 8px 4px", fontSize: 10, fontWeight: 700, letterSpacing: 1.2, textTransform: "uppercase", color: "var(--text-3)", cursor: "pointer", textAlign: "left" }}
         >
           {g.icon && <g.icon size={11} style={{ color: "var(--text-3)" }} />}
           <span style={{ flex: 1 }}>{g.title}</span>
-          <ChevronRight
-            size={12}
-            style={{
-              color: "var(--text-3)",
-              transform: isOpen ? "rotate(90deg)" : "none",
-              transition: hydrated ? "transform var(--t)" : "none",
-            }}
-          />
+          <ChevronRight size={12} style={{ color: "var(--text-3)", transform: isOpen ? "rotate(90deg)" : "none", transition: hydrated ? "transform var(--t)" : "none" }} />
         </button>
       )}
       {isOpen && g.items.map((it) => (
@@ -557,17 +406,10 @@ function NavGroupSection({
 
 // ── NavItemRenderer: leaf link or collapsible submenu ───
 function NavItemRenderer({
-  item,
-  activeHref,
-  activeUnitId,
-  userRoles,
-  depth,
+  item, activeHref, activeUnitId, userRoles, depth,
 }: {
-  item: NavItem;
-  activeHref: string | null;
-  activeUnitId: string | null;
-  userRoles: string[];
-  depth: number;
+  item: NavItem; activeHref: string | null; activeUnitId: string | null;
+  userRoles: string[]; depth: number;
 }) {
   const hasChildren = !!item.children?.length;
 
@@ -580,12 +422,10 @@ function NavItemRenderer({
 
   const [subOpen, setSubOpen] = useState(false);
 
-  // Auto-open submenu when a child page is active
   useEffect(() => {
     if (isChildActive) setSubOpen(true);
   }, [isChildActive]);
 
-  // Guards
   if (item.href === "/operacao/eventos" && activeUnitId !== MEET_AND_EAT) return null;
   if (item.roles && !item.roles.some((r) => userRoles.includes(r))) return null;
 
@@ -599,25 +439,11 @@ function NavItemRenderer({
         <button
           type="button"
           onClick={() => setSubOpen((v) => !v)}
-          style={{
-            display: "flex", alignItems: "center", gap: 12, width: "100%",
-            padding: `9px 12px 9px ${pl}px`,
-            borderRadius: 8, background: "transparent", border: "none",
-            color: isChildActive ? "var(--text)" : "var(--text-2)",
-            fontSize: 13, fontWeight: isChildActive ? 600 : 500,
-            cursor: "pointer", textAlign: "left", transition: "all var(--t)",
-          }}
+          style={{ display: "flex", alignItems: "center", gap: 12, width: "100%", padding: `9px 12px 9px ${pl}px`, borderRadius: 8, background: "transparent", border: "none", color: isChildActive ? "var(--text)" : "var(--text-2)", fontSize: 13, fontWeight: isChildActive ? 600 : 500, cursor: "pointer", textAlign: "left", transition: "all var(--t)" }}
         >
           <Icon size={16} strokeWidth={1.8} style={{ color: "currentColor", flexShrink: 0 }} />
           <span style={{ flex: 1 }}>{item.label}</span>
-          <ChevronRight
-            size={11}
-            style={{
-              color: "var(--text-3)",
-              transform: subOpen ? "rotate(90deg)" : "none",
-              transition: "transform var(--t)",
-            }}
-          />
+          <ChevronRight size={11} style={{ color: "var(--text-3)", transform: subOpen ? "rotate(90deg)" : "none", transition: "transform var(--t)" }} />
         </button>
         {subOpen && item.children!.map((child) => (
           <NavItemRenderer
@@ -636,20 +462,10 @@ function NavItemRenderer({
   return (
     <Link
       href={item.href}
-      style={{
-        position: "relative", display: "flex", alignItems: "center", gap: 12,
-        padding: `9px 12px 9px ${pl}px`,
-        borderRadius: 8, textDecoration: "none",
-        color: active ? "var(--text)" : "var(--text-2)",
-        background: active ? "var(--surface-2)" : "transparent",
-        fontSize: 13, fontWeight: active ? 600 : 500, transition: "all var(--t)",
-      }}
+      style={{ position: "relative", display: "flex", alignItems: "center", gap: 12, padding: `9px 12px 9px ${pl}px`, borderRadius: 8, textDecoration: "none", color: active ? "var(--text)" : "var(--text-2)", background: active ? "var(--surface-2)" : "transparent", fontSize: 13, fontWeight: active ? 600 : 500, transition: "all var(--t)" }}
     >
       {active && (
-        <span style={{
-          position: "absolute", left: -12, top: 6, bottom: 6, width: 3,
-          background: "var(--brand)", borderRadius: "0 4px 4px 0",
-        }} />
+        <span style={{ position: "absolute", left: -12, top: 6, bottom: 6, width: 3, background: "var(--brand)", borderRadius: "0 4px 4px 0" }} />
       )}
       <Icon size={16} strokeWidth={active ? 2.2 : 1.8} style={{ color: active ? "var(--brand)" : "currentColor", flexShrink: 0 }} />
       <span style={{ flex: 1 }}>{item.label}</span>

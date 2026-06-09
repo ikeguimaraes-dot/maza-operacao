@@ -59,16 +59,7 @@ const NAV_GROUPS: NavGroup[] = [
       { href: "/operacao/vendedores",    label: "Vendedores",    icon: UserCheck },
       { href: "/operacao/auditorias",    label: "Auditorias",    icon: ClipboardList },
       { href: "/operacao/eventos",       label: "Eventos",       icon: CalendarDays },
-    ],
-  },
-  {
-    id: "pessoas-op",
-    title: "Pessoas",
-    icon: Users,
-    defaultOpen: true,
-    roles: ["pessoas", "gm", "founder"],
-    items: [
-      { href: "/operacao/pessoas/formulario-recrutamento", label: "Formulário de Recrutamento", icon: ClipboardList },
+      { href: "/operacao/pessoas/formulario-recrutamento", label: "Formulário de Recrutamento", icon: ClipboardList, roles: ["pessoas", "gm", "founder"] },
     ],
   },
   {

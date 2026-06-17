@@ -66,6 +66,7 @@ const NAV_GROUPS: NavGroup[] = [
       { href: "/operacao/performance",   label: "Performance",   icon: Activity },
       { href: "/operacao/vendedores",    label: "Vendedores",    icon: UserCheck },
       { href: "/operacao/auditorias",    label: "Auditorias",    icon: ClipboardList },
+      { href: "/operacao/pedidos",       label: "Pedidos",       icon: ShoppingCart, roles: ["operacao", "founder", "administrativo"] },
       { href: "/operacao/eventos",       label: "Eventos",       icon: CalendarDays },
       { href: "/operacao/pessoas/formulario-recrutamento", label: "Formulário de Recrutamento", icon: ClipboardList, roles: ["pessoas", "gm", "founder"] },
     ],

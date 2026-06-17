@@ -2001,6 +2001,7 @@ export type Database = {
           data_prevista: string | null;
           valor_total: number;
           observacoes: string | null;
+          solicitante_nome: string | null;
           created_by: string | null;
           created_at: string;
           updated_at: string;
@@ -2017,6 +2018,7 @@ export type Database = {
           data_prevista?: string | null;
           valor_total?: number;
           observacoes?: string | null;
+          solicitante_nome?: string | null;
           created_by?: string | null;
           created_at?: string;
           updated_at?: string;
@@ -2033,6 +2035,7 @@ export type Database = {
           data_prevista?: string | null;
           valor_total?: number;
           observacoes?: string | null;
+          solicitante_nome?: string | null;
           created_by?: string | null;
           created_at?: string;
           updated_at?: string;

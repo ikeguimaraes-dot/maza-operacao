@@ -80,6 +80,7 @@ export async function getPedidosRecentes(unitId: string): Promise<PedidoComItens
     .from("purchase_orders" as never)
     .select("*, purchase_order_items(*)")
     .eq("unit_id", unitId)
+    .neq("status", "rascunho")
     .order("created_at", { ascending: false })
     .limit(15)) as unknown as {
     data: PedidoComItens[] | null;
@@ -381,6 +382,7 @@ export async function getPedidosParaRecebimento(
     .from("purchase_orders" as never)
     .select("*, purchase_order_items(*)")
     .eq("unit_id", unitId)
+    .neq("status", "rascunho")
     .order("created_at", { ascending: false })) as unknown as {
     data: PedidoComItens[] | null;
     error: { message: string } | null;

@@ -2,7 +2,7 @@ import { Suspense } from "react";
 import { requireUser } from "@kph/auth/server";
 import { getCurrentUnit } from "@kph/auth/unit";
 import { redirect } from "next/navigation";
-import { getIngredientes, getPedidosRecentes } from "./actions";
+import { getProdutos, getPedidosRecentes } from "./actions";
 import { PedidosClient } from "./pedidos-client";
 
 export const dynamic = "force-dynamic";
@@ -47,15 +47,15 @@ async function PedidosSection({ userId }: { userId: string }) {
       </div>
     );
   }
-  const [ingredientes, pedidos] = await Promise.all([
-    getIngredientes(unit.id),
+  const [produtos, pedidos] = await Promise.all([
+    getProdutos(unit.id),
     getPedidosRecentes(unit.id),
   ]);
   return (
     <PedidosClient
       unit={{ id: unit.id, name: unit.name, brand_id: unit.brand_id ?? null }}
       userId={userId}
-      ingredientes={ingredientes}
+      produtos={produtos}
       pedidosIniciais={pedidos}
     />
   );

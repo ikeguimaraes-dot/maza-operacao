@@ -5,16 +5,12 @@ import { createSupabaseServerClient } from "@kph/db/supabase/server";
 import { requireUser } from "@kph/auth/server";
 import { getCurrentUnit } from "@kph/auth/unit";
 import type { ActionResult } from "@/lib/result";
-import type { IngredienteCategoria, UnidadePadrao } from "@kph/db/types/compras-ingredientes";
 import type { PurchaseOrderRow, PurchaseOrderItemRow } from "@kph/db/types/database";
 
-export type IngredienteComEstoque = {
-  id: string;
+export type ProdutoCatalogo = {
   nome: string;
-  categoria: IngredienteCategoria;
-  unidade_padrao: UnidadePadrao;
-  estoque_minimo: number;
-  estoque_real: number;
+  categoria: string;
+  unidade: string;
 };
 
 export type ItemPedido = {
@@ -28,58 +24,45 @@ export type PedidoComItens = PurchaseOrderRow & {
   purchase_order_items: PurchaseOrderItemRow[];
 };
 
-export async function getIngredientes(unitId: string): Promise<IngredienteComEstoque[]> {
+export async function getProdutos(unitId: string): Promise<ProdutoCatalogo[]> {
   const supabase = await createSupabaseServerClient();
   if (!supabase) return [];
 
-  type IngRow = {
-    id: string;
-    nome: string;
-    categoria: IngredienteCategoria;
-    unidade_padrao: UnidadePadrao;
-  };
-  type StockRow = {
-    ingredient_id: string;
-    estoque_minimo: number | string;
-    estoque_real: number | string;
+  type Row = {
+    item_descricao: string;
+    desc_gerencial: string | null;
+    unidade_medida: string | null;
   };
 
-  const { data: ings, error: errIng } = (await supabase
-    .from("ingredients" as never)
-    .select("id, nome, categoria, unidade_padrao")
-    .eq("ativo", true)
-    .order("categoria")
-    .order("nome")) as unknown as {
-    data: IngRow[] | null;
+  const { data, error } = (await supabase
+    .from("produtos_relatorio" as never)
+    .select("item_descricao, desc_gerencial, unidade_medida")
+    .eq("unit_id", unitId)
+    .not("item_descricao", "is", null)
+    .neq("item_descricao", "")
+    .order("item_descricao")
+    .order("ano_lancamento", { ascending: false })
+    .order("mes_lancamento", { ascending: false })) as unknown as {
+    data: Row[] | null;
     error: { message: string } | null;
   };
 
-  if (errIng) {
-    console.error("[getIngredientes] ings:", errIng.message);
+  if (error) {
+    console.error("[getProdutos]", error.message);
     return [];
   }
 
-  const { data: stocks } = (await supabase
-    .from("ingredient_stock" as never)
-    .select("ingredient_id, estoque_minimo, estoque_real")
-    .eq("unit_id", unitId)) as unknown as {
-    data: StockRow[] | null;
-    error: { message: string } | null;
-  };
-
-  const stockMap = new Map((stocks ?? []).map((s) => [s.ingredient_id, s]));
-
-  return (ings ?? []).map((i) => {
-    const s = stockMap.get(i.id);
-    return {
-      id: i.id,
-      nome: i.nome,
-      categoria: i.categoria,
-      unidade_padrao: i.unidade_padrao,
-      estoque_minimo: Number(s?.estoque_minimo ?? 0),
-      estoque_real: Number(s?.estoque_real ?? 0),
-    };
-  });
+  const seen = new Map<string, ProdutoCatalogo>();
+  for (const row of data ?? []) {
+    if (!seen.has(row.item_descricao)) {
+      seen.set(row.item_descricao, {
+        nome: row.item_descricao,
+        categoria: row.desc_gerencial ?? "",
+        unidade: (row.unidade_medida ?? "kg").toLowerCase(),
+      });
+    }
+  }
+  return [...seen.values()];
 }
 
 export async function getPedidosRecentes(unitId: string): Promise<PedidoComItens[]> {
@@ -165,34 +148,4 @@ export async function criarPedido(
 
   revalidatePath("/operacao/pedidos");
   return { ok: true, data: pedido };
-}
-
-export async function atualizarEstoque(
-  ingredienteId: string,
-  unitId: string,
-  estoqueMinimo: number,
-  estoqueReal: number,
-): Promise<{ ok: true } | { ok: false; error: string }> {
-  const supabase = await createSupabaseServerClient();
-  if (!supabase) return { ok: false, error: "Supabase indisponível." };
-
-  const { error } = (await supabase
-    .from("ingredient_stock" as never)
-    .upsert(
-      {
-        ingredient_id: ingredienteId,
-        unit_id: unitId,
-        estoque_minimo: estoqueMinimo,
-        estoque_real: estoqueReal,
-        updated_at: new Date().toISOString(),
-      } as never,
-      { onConflict: "ingredient_id,unit_id" },
-    )) as unknown as { error: { message: string } | null };
-
-  if (error) {
-    console.error("[atualizarEstoque]", error.message);
-    return { ok: false, error: error.message };
-  }
-
-  return { ok: true };
 }

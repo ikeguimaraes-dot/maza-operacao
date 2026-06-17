@@ -6,8 +6,8 @@ import { toast } from "sonner";
 import { Trash2, ChevronDown, ChevronRight } from "lucide-react";
 import { formatDateBR } from "@/lib/format";
 import type { PurchaseOrderItemRow, PurchaseOrderStatus } from "@kph/db/types/database";
-import { criarPedido, atualizarEstoque } from "./actions";
-import type { IngredienteComEstoque, ItemPedido, PedidoComItens } from "./actions";
+import { criarPedido } from "./actions";
+import type { ProdutoCatalogo, ItemPedido, PedidoComItens } from "./actions";
 
 const LABEL_MAP: Record<string, string> = {
   proteina: "Proteína",
@@ -32,7 +32,7 @@ const LABEL_MAP: Record<string, string> = {
 interface Props {
   unit: { id: string; name: string; brand_id: string | null };
   userId: string;
-  ingredientes: IngredienteComEstoque[];
+  produtos: ProdutoCatalogo[];
   pedidosIniciais: PedidoComItens[];
 }
 
@@ -61,13 +61,13 @@ function StatusBadge({ status }: { status: PurchaseOrderStatus }) {
   );
 }
 
-export function PedidosClient({ unit, ingredientes, pedidosIniciais }: Props) {
+export function PedidosClient({ unit, produtos, pedidosIniciais }: Props) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
 
   const categorias = useMemo(
-    () => [...new Set(ingredientes.map((i) => i.categoria))].sort(),
-    [ingredientes],
+    () => [...new Set(produtos.map((p) => p.categoria))].sort(),
+    [produtos],
   );
 
   const [categoriaAtiva, setCategoriaAtiva] = useState<string | null>(
@@ -75,9 +75,6 @@ export function PedidosClient({ unit, ingredientes, pedidosIniciais }: Props) {
   );
   const [busca, setBusca] = useState("");
   const [qtds, setQtds] = useState<Record<string, string>>({});
-  // estoque editado localmente: { minimo, real } como strings (para inputs)
-  const [estoques, setEstoques] = useState<Record<string, { minimo: string; real: string }>>({});
-  // unidade override por ingrediente (para o select de g/un)
   const [unidades, setUnidades] = useState<Record<string, string>>({});
   const [carrinho, setCarrinho] = useState<ItemPedido[]>([]);
   const [observacoes, setObservacoes] = useState("");
@@ -89,35 +86,35 @@ export function PedidosClient({ unit, ingredientes, pedidosIniciais }: Props) {
   }
 
   const produtosCategoria = categoriaAtiva
-    ? ingredientes.filter((i) => i.categoria === categoriaAtiva)
+    ? produtos.filter((p) => p.categoria === categoriaAtiva)
     : [];
 
   const produtosFiltrados =
     busca === ""
       ? produtosCategoria
-      : produtosCategoria.filter((i) =>
-          i.nome.toLowerCase().includes(busca.toLowerCase()),
+      : produtosCategoria.filter((p) =>
+          p.nome.toLowerCase().includes(busca.toLowerCase()),
         );
 
-  function getUnidade(ing: IngredienteComEstoque): string {
-    return unidades[ing.id] ?? ing.unidade_padrao;
+  function getUnidade(prod: ProdutoCatalogo): string {
+    return unidades[prod.nome] ?? prod.unidade;
   }
 
-  function handleUnidadeChange(ing: IngredienteComEstoque, novaUnidade: string) {
-    setUnidades((prev) => ({ ...prev, [ing.id]: novaUnidade }));
+  function handleUnidadeChange(prod: ProdutoCatalogo, novaUnidade: string) {
+    setUnidades((prev) => ({ ...prev, [prod.nome]: novaUnidade }));
     setCarrinho((prev) =>
       prev.map((i) =>
-        i.ingrediente_id === ing.id ? { ...i, unidade: novaUnidade } : i,
+        i.ingrediente_id === prod.nome ? { ...i, unidade: novaUnidade } : i,
       ),
     );
   }
 
-  function handleAdicionar(ing: IngredienteComEstoque) {
-    const numQtd = Number(qtds[ing.id] ?? "");
+  function handleAdicionar(prod: ProdutoCatalogo) {
+    const numQtd = Number(qtds[prod.nome] ?? "");
     if (numQtd <= 0) return;
-    const unidade = getUnidade(ing);
+    const unidade = getUnidade(prod);
     setCarrinho((prev) => {
-      const idx = prev.findIndex((i) => i.ingrediente_id === ing.id);
+      const idx = prev.findIndex((i) => i.ingrediente_id === prod.nome);
       if (idx >= 0) {
         const next = [...prev];
         next[idx] = { ...next[idx]!, quantidade: next[idx]!.quantidade + numQtd, unidade };
@@ -125,10 +122,10 @@ export function PedidosClient({ unit, ingredientes, pedidosIniciais }: Props) {
       }
       return [
         ...prev,
-        { ingrediente_id: ing.id, nome: ing.nome, unidade, quantidade: numQtd },
+        { ingrediente_id: prod.nome, nome: prod.nome, unidade, quantidade: numQtd },
       ];
     });
-    setQtds((prev) => ({ ...prev, [ing.id]: "" }));
+    setQtds((prev) => ({ ...prev, [prod.nome]: "" }));
   }
 
   function handleRemoverItem(ingrediente_id: string) {
@@ -141,21 +138,6 @@ export function PedidosClient({ unit, ingredientes, pedidosIniciais }: Props) {
     setCarrinho((prev) =>
       prev.map((i) => (i.ingrediente_id === ingrediente_id ? { ...i, quantidade: num } : i)),
     );
-  }
-
-  function handleEstoqueBlur(ing: IngredienteComEstoque) {
-    const minimoVal = estoques[ing.id]?.minimo;
-    const realVal = estoques[ing.id]?.real;
-    if (minimoVal === undefined && realVal === undefined) return;
-    const minimo = Number(minimoVal ?? ing.estoque_minimo);
-    const real = Number(realVal ?? ing.estoque_real);
-    void atualizarEstoque(ing.id, unit.id, minimo, real).then((result) => {
-      if (result.ok) {
-        toast("Estoque atualizado", { duration: 2000 });
-      } else {
-        toast.error(result.error);
-      }
-    });
   }
 
   function handleEnviar() {
@@ -230,11 +212,6 @@ export function PedidosClient({ unit, ingredientes, pedidosIniciais }: Props) {
             ) : (
               categorias.map((cat) => {
                 const isActive = cat === categoriaAtiva;
-                const criticos = ingredientes.filter((i) => {
-                  const min = Number(estoques[i.id]?.minimo ?? i.estoque_minimo);
-                  const real = Number(estoques[i.id]?.real ?? i.estoque_real);
-                  return i.categoria === cat && min > 0 && real <= min;
-                }).length;
                 return (
                   <button
                     key={cat}
@@ -243,8 +220,6 @@ export function PedidosClient({ unit, ingredientes, pedidosIniciais }: Props) {
                     style={{
                       display: "flex",
                       alignItems: "center",
-                      justifyContent: "space-between",
-                      gap: 6,
                       width: "100%",
                       padding: "8px 10px",
                       marginBottom: 2,
@@ -268,21 +243,6 @@ export function PedidosClient({ unit, ingredientes, pedidosIniciais }: Props) {
                     >
                       {LABEL_MAP[cat] ?? cat}
                     </span>
-                    {criticos > 0 && (
-                      <span
-                        style={{
-                          fontSize: 10,
-                          fontWeight: 700,
-                          background: "#7F1D1D",
-                          color: "#FCA5A5",
-                          borderRadius: 99,
-                          padding: "1px 6px",
-                          flexShrink: 0,
-                        }}
-                      >
-                        {criticos}
-                      </span>
-                    )}
                   </button>
                 );
               })
@@ -352,8 +312,6 @@ export function PedidosClient({ unit, ingredientes, pedidosIniciais }: Props) {
                         {(
                           [
                             { label: "Produto", align: "left" as const, width: undefined },
-                            { label: "Mín", align: "center" as const, width: 80 },
-                            { label: "Real", align: "center" as const, width: 80 },
                             { label: "Qtd", align: "left" as const, width: 96 },
                             { label: "Un.", align: "left" as const, width: 70 },
                             { label: "", align: "left" as const, width: 110 },
@@ -379,107 +337,14 @@ export function PedidosClient({ unit, ingredientes, pedidosIniciais }: Props) {
                       </tr>
                     </thead>
                     <tbody>
-                      {produtosFiltrados.map((ing) => {
-                        const minimoAtual = Number(
-                          estoques[ing.id]?.minimo ?? ing.estoque_minimo,
-                        );
-                        const realAtual = Number(
-                          estoques[ing.id]?.real ?? ing.estoque_real,
-                        );
-                        const critico = minimoAtual > 0 && realAtual <= minimoAtual;
-                        const qtdVal = qtds[ing.id] ?? "";
+                      {produtosFiltrados.map((prod) => {
+                        const qtdVal = qtds[prod.nome] ?? "";
                         const canAdd = Number(qtdVal) > 0;
                         return (
-                          <tr
-                            key={ing.id}
-                            style={{
-                              borderLeft: critico
-                                ? "3px solid #EF4444"
-                                : "3px solid transparent",
-                            }}
-                          >
+                          <tr key={prod.nome}>
                             {/* Nome */}
                             <td style={{ padding: "9px 8px", color: "var(--text)" }}>
-                              {ing.nome}
-                              {critico && (
-                                <span
-                                  style={{
-                                    marginLeft: 8,
-                                    fontSize: 10,
-                                    color: "#EF4444",
-                                    fontWeight: 700,
-                                  }}
-                                >
-                                  ⚠ crítico
-                                </span>
-                              )}
-                            </td>
-
-                            {/* Estoque mínimo — editável */}
-                            <td style={{ padding: "9px 8px", textAlign: "center" }}>
-                              <input
-                                type="number"
-                                min="0"
-                                step="1"
-                                value={estoques[ing.id]?.minimo ?? ing.estoque_minimo}
-                                onChange={(e) =>
-                                  setEstoques((prev) => ({
-                                    ...prev,
-                                    [ing.id]: {
-                                      real:
-                                        prev[ing.id]?.real ??
-                                        String(ing.estoque_real),
-                                      minimo: e.target.value,
-                                    },
-                                  }))
-                                }
-                                onBlur={() => handleEstoqueBlur(ing)}
-                                style={{
-                                  width: 64,
-                                  background: "var(--surface-2)",
-                                  border: "1px solid var(--border)",
-                                  borderRadius: 6,
-                                  color: "var(--text-3)",
-                                  fontSize: 12,
-                                  padding: "4px 6px",
-                                  outline: "none",
-                                  textAlign: "center",
-                                }}
-                              />
-                            </td>
-
-                            {/* Estoque real — editável */}
-                            <td style={{ padding: "9px 8px", textAlign: "center" }}>
-                              <input
-                                type="number"
-                                min="0"
-                                step="1"
-                                value={estoques[ing.id]?.real ?? ing.estoque_real}
-                                onChange={(e) =>
-                                  setEstoques((prev) => ({
-                                    ...prev,
-                                    [ing.id]: {
-                                      minimo:
-                                        prev[ing.id]?.minimo ??
-                                        String(ing.estoque_minimo),
-                                      real: e.target.value,
-                                    },
-                                  }))
-                                }
-                                onBlur={() => handleEstoqueBlur(ing)}
-                                style={{
-                                  width: 64,
-                                  background: "var(--surface-2)",
-                                  border: "1px solid var(--border)",
-                                  borderRadius: 6,
-                                  color: critico ? "#EF4444" : "var(--text-2)",
-                                  fontSize: 12,
-                                  fontWeight: critico ? 700 : 400,
-                                  padding: "4px 6px",
-                                  outline: "none",
-                                  textAlign: "center",
-                                }}
-                              />
+                              {prod.nome}
                             </td>
 
                             {/* Qtd */}
@@ -492,11 +357,11 @@ export function PedidosClient({ unit, ingredientes, pedidosIniciais }: Props) {
                                 onChange={(e) =>
                                   setQtds((prev) => ({
                                     ...prev,
-                                    [ing.id]: e.target.value,
+                                    [prod.nome]: e.target.value,
                                   }))
                                 }
                                 onKeyDown={(e) => {
-                                  if (e.key === "Enter") handleAdicionar(ing);
+                                  if (e.key === "Enter") handleAdicionar(prod);
                                 }}
                                 style={{
                                   width: 80,
@@ -511,12 +376,12 @@ export function PedidosClient({ unit, ingredientes, pedidosIniciais }: Props) {
                               />
                             </td>
 
-                            {/* Unidade — select g/un */}
+                            {/* Unidade */}
                             <td style={{ padding: "9px 8px" }}>
                               <select
-                                value={getUnidade(ing)}
+                                value={getUnidade(prod)}
                                 onChange={(e) =>
-                                  handleUnidadeChange(ing, e.target.value)
+                                  handleUnidadeChange(prod, e.target.value)
                                 }
                                 style={{
                                   width: "100%",
@@ -542,7 +407,7 @@ export function PedidosClient({ unit, ingredientes, pedidosIniciais }: Props) {
                             <td style={{ padding: "9px 8px" }}>
                               <button
                                 type="button"
-                                onClick={() => handleAdicionar(ing)}
+                                onClick={() => handleAdicionar(prod)}
                                 disabled={!canAdd}
                                 style={{
                                   background: canAdd

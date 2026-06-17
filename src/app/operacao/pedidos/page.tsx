@@ -1,6 +1,9 @@
+import { Suspense } from "react";
 import { requireUser } from "@kph/auth/server";
 import { getCurrentUnit } from "@kph/auth/unit";
 import { redirect } from "next/navigation";
+import { getIngredientes, getPedidosRecentes } from "./actions";
+import { PedidosClient } from "./pedidos-client";
 
 export const dynamic = "force-dynamic";
 
@@ -13,59 +16,47 @@ export default async function PedidosPage() {
   );
   if (!temAcesso) redirect("/operacao");
 
-  const unit = await getCurrentUnit();
-
   return (
     <div style={{ maxWidth: 1180, margin: "0 auto" }}>
-      <header style={{ marginBottom: 20 }}>
-        <div
-          style={{
-            fontSize: 11,
-            fontWeight: 700,
-            letterSpacing: 1.6,
-            textTransform: "uppercase",
-            color: "var(--text-3)",
-          }}
-        >
-          Operação · Pedidos
-        </div>
-        <h1
-          style={{
-            fontSize: 26,
-            fontWeight: 700,
-            margin: "6px 0 4px",
-            color: "var(--text)",
-            letterSpacing: -0.4,
-          }}
-        >
-          Pedidos
-        </h1>
-        <p
-          style={{
-            fontSize: 12,
-            color: "var(--text-3)",
-            margin: 0,
-            lineHeight: 1.55,
-            maxWidth: 720,
-          }}
-        >
-          {unit ? `Unidade: ${unit.name}` : "Selecione uma unidade no topo para ver os pedidos."}
-        </p>
-      </header>
+      <Suspense
+        fallback={
+          <div style={{ color: "var(--text-3)", fontSize: 13 }}>
+            Carregando…
+          </div>
+        }
+      >
+        <PedidosSection userId={user.id} />
+      </Suspense>
+    </div>
+  );
+}
 
+async function PedidosSection({ userId }: { userId: string }) {
+  const unit = await getCurrentUnit();
+  if (!unit) {
+    return (
       <div
         style={{
-          background: "var(--surface)",
-          border: "1px dashed var(--border)",
-          borderRadius: 8,
-          padding: "32px 22px",
-          textAlign: "center",
           color: "var(--text-3)",
           fontSize: 13,
+          padding: "32px 0",
+          textAlign: "center",
         }}
       >
-        Módulo de Pedidos em construção.
+        Selecione uma unidade no topo para ver os pedidos.
       </div>
-    </div>
+    );
+  }
+  const [ingredientes, pedidos] = await Promise.all([
+    getIngredientes(),
+    getPedidosRecentes(unit.id),
+  ]);
+  return (
+    <PedidosClient
+      unit={{ id: unit.id, name: unit.name, brand_id: unit.brand_id ?? null }}
+      userId={userId}
+      ingredientes={ingredientes}
+      pedidosIniciais={pedidos}
+    />
   );
 }

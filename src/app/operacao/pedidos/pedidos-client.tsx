@@ -251,6 +251,7 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
     setUnidades({});
     setObservacoes("");
     setCarrinhoAberto(false);
+    setRascunhoId(null);
   }
 
   function handleEnviar() {
@@ -270,13 +271,12 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
         return;
       }
 
-      const result = await criarPedido(itensParaEnviar, observacoes || null, solicitanteNome.trim());
+      const result = await criarPedido(itensParaEnviar, observacoes || null, solicitanteNome.trim(), rascunhoId);
 
       if (!result.ok) { toast.error(result.error); return; }
 
       resetCarrinho();
       setSolicitanteNome("");
-      setRascunhoId(null);
       toast.success("Pedido enviado com sucesso!");
       router.refresh();
     });

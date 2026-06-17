@@ -96,6 +96,7 @@ export async function criarPedido(
   itens: ItemPedido[],
   observacoes: string | null,
   solicitanteNome: string,
+  rascunhoId: string | null,
 ): Promise<ActionResult<PurchaseOrderRow>> {
   if (itens.length === 0) {
     return { ok: false, error: "Adicione pelo menos um item ao pedido." };
@@ -115,20 +116,20 @@ export async function criarPedido(
   const supabase = await createSupabaseServerClient();
   if (!supabase) return { ok: false, error: "Erro ao conectar ao banco de dados." };
 
-  // Verifica se existe rascunho deste solicitante para aproveitar (promove em vez de criar novo)
-  const { data: rascunhoArr } = (await supabase
-    .from("purchase_orders" as never)
-    .select("id")
-    .eq("unit_id", unit.id)
-    .eq("status", "rascunho")
-    .ilike("solicitante_nome" as never, solicitanteNome)
-    .order("created_at", { ascending: false })
-    .limit(1)) as unknown as { data: Array<{ id: string }> | null; error: unknown };
+  let promotedId: string | null = null;
+  if (rascunhoId) {
+    const { data: found } = (await supabase
+      .from("purchase_orders" as never)
+      .select("id")
+      .eq("id", rascunhoId)
+      .eq("status", "rascunho")
+      .limit(1)) as unknown as { data: Array<{ id: string }> | null; error: unknown };
+    promotedId = found?.[0]?.id ?? null;
+  }
 
-  const rascunhoId = rascunhoArr?.[0]?.id ?? null;
   let pedido: PurchaseOrderRow;
 
-  if (rascunhoId) {
+  if (promotedId) {
     const { data: updated, error: updateError } = (await supabase
       .from("purchase_orders" as never)
       .update({
@@ -136,7 +137,7 @@ export async function criarPedido(
         observacoes,
         solicitante_nome: solicitanteNome || null,
       } as never)
-      .eq("id", rascunhoId)
+      .eq("id", promotedId)
       .select()
       .single()) as unknown as { data: PurchaseOrderRow | null; error: { message: string } | null };
 
@@ -148,7 +149,7 @@ export async function criarPedido(
     await (supabase
       .from("purchase_order_items" as never)
       .delete()
-      .eq("order_id", rascunhoId) as unknown as Promise<unknown>);
+      .eq("order_id", promotedId) as unknown as Promise<unknown>);
 
     pedido = updated;
   } else {

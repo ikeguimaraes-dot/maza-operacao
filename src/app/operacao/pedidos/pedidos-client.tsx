@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { ShoppingBag, X, ChevronDown, ChevronRight, ArrowLeft } from "lucide-react";
@@ -17,7 +17,6 @@ import type {
   PedidoComItens,
   PedidoParaRecebimento,
   RecebimentoItemInput,
-  RascunhoPedido,
 } from "./actions";
 
 // ── Constantes e helpers ─────────────────────────────────────────────────────
@@ -122,7 +121,6 @@ interface Props {
   produtos: ProdutoCatalogo[];
   pedidosIniciais: PedidoComItens[];
   pedidosParaRecebimento: PedidoParaRecebimento[];
-  rascunhoInicial: RascunhoPedido | null;
 }
 
 // ── StatusBadge ──────────────────────────────────────────────────────────────
@@ -145,7 +143,7 @@ function StatusBadge({ status }: { status: PurchaseOrderStatus }) {
 
 // ── Componente principal ─────────────────────────────────────────────────────
 
-export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRecebimento, rascunhoInicial }: Props) {
+export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRecebimento }: Props) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [isRecebendoPending, startRecebendoTransition] = useTransition();
@@ -164,7 +162,7 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
   const [observacoes, setObservacoes] = useState("");
   const [carrinhoAberto, setCarrinhoAberto] = useState(false);
   const [solicitanteNome, setSolicitanteNome] = useState("");
-  const [rascunhoId, setRascunhoId] = useState<string | null>(rascunhoInicial?.id ?? null);
+  const [rascunhoId, setRascunhoId] = useState<string | null>(null);
 
   // ── Estado do histórico ──
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -183,23 +181,6 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
   const [isFinalizarModalAberto, setIsFinalizarModalAberto] = useState(false);
   const [isRascunhoModalAberto, setIsRascunhoModalAberto] = useState(false);
   const [assinaturaNome, setAssinaturaNome] = useState("");
-
-  // ── Carrega rascunho de pedido ao montar ──
-  useEffect(() => {
-    if (!rascunhoInicial || rascunhoInicial.itens.length === 0) return;
-    const initQtds: Record<string, number> = {};
-    const initUnidades: Record<string, string> = {};
-    for (const item of rascunhoInicial.itens) {
-      initQtds[item.nome] = item.quantidade;
-      initUnidades[item.nome] = item.unidade;
-    }
-    setQtds(initQtds);
-    setUnidades(initUnidades);
-    if (rascunhoInicial.observacoes) setObservacoes(rascunhoInicial.observacoes);
-    if (rascunhoInicial.solicitante_nome) setSolicitanteNome(rascunhoInicial.solicitante_nome);
-    toast("Rascunho carregado — continue de onde parou", { icon: "📋" });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   // ── Dados derivados ──
   const carrinho = useMemo(
@@ -301,6 +282,10 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
   }
 
   function handleSalvarRascunhoPedido() {
+    if (solicitanteNome.trim() === "") {
+      toast.error("Digite seu nome antes de salvar o rascunho");
+      return;
+    }
     startSalvandoPedidoTransition(async () => {
       const itensParaSalvar = Object.entries(qtds)
         .filter(([, v]) => v > 0)

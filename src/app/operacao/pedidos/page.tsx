@@ -2,7 +2,7 @@ import { Suspense } from "react";
 import { requireUser } from "@kph/auth/server";
 import { getCurrentUnit } from "@kph/auth/unit";
 import { redirect } from "next/navigation";
-import { getProdutos, getPedidosRecentes, getPedidosParaRecebimento, getRascunhoPedido } from "./actions";
+import { getProdutos, getPedidosRecentes, getPedidosParaRecebimento } from "./actions";
 import { PedidosClient } from "./pedidos-client";
 
 export const dynamic = "force-dynamic";
@@ -47,11 +47,10 @@ async function PedidosSection({ userId }: { userId: string }) {
       </div>
     );
   }
-  const [produtos, pedidos, pedidosRecebimento, rascunho] = await Promise.all([
+  const [produtos, pedidos, pedidosRecebimento] = await Promise.all([
     getProdutos(unit.id),
     getPedidosRecentes(unit.id),
     getPedidosParaRecebimento(unit.id),
-    getRascunhoPedido(unit.id),
   ]);
   return (
     <PedidosClient
@@ -60,7 +59,6 @@ async function PedidosSection({ userId }: { userId: string }) {
       produtos={produtos}
       pedidosIniciais={pedidos}
       pedidosParaRecebimento={pedidosRecebimento}
-      rascunhoInicial={rascunho}
     />
   );
 }

@@ -319,7 +319,7 @@ export async function salvarRascunhoPedido(
     }
   }
 
-  // Não revalida path (operação silenciosa)
+  revalidatePath("/operacao/pedidos");
   return { ok: true, data: { pedidoId } };
 }
 

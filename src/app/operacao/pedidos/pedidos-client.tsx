@@ -236,9 +236,8 @@ export function PedidosClient({ unit, produtos, pedidosIniciais }: Props) {
                     <span
                       style={{
                         flex: 1,
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
+                        whiteSpace: "normal",
+                        wordBreak: "break-word",
                       }}
                     >
                       {LABEL_MAP[cat] ?? cat}

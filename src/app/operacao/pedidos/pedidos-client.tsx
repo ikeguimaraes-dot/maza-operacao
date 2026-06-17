@@ -189,20 +189,16 @@ export function PedidosClient({ unit, produtos, pedidosIniciais }: Props) {
     [pedidosIniciais, deletedIds],
   );
 
-  const produtosCategoria = useMemo(
-    () => (categoriaAtiva ? produtos.filter((p) => p.categoria === categoriaAtiva) : []),
-    [produtos, categoriaAtiva],
-  );
-
-  const produtosFiltrados = useMemo(
-    () =>
-      busca === ""
-        ? produtosCategoria
-        : produtosCategoria.filter((p) =>
-            p.nome.toLowerCase().includes(busca.toLowerCase()),
-          ),
-    [produtosCategoria, busca],
-  );
+  const produtosFiltrados = useMemo(() => {
+    if (busca.trim() === "") {
+      return categoriaAtiva
+        ? produtos.filter((p) => p.categoria === categoriaAtiva)
+        : [];
+    }
+    return produtos.filter((p) =>
+      p.nome.toLowerCase().includes(busca.toLowerCase().trim()),
+    );
+  }, [produtos, busca, categoriaAtiva]);
 
   // ── Handlers do formulário ──
 
@@ -494,7 +490,7 @@ export function PedidosClient({ unit, produtos, pedidosIniciais }: Props) {
 
           {/* Coluna direita — Produtos */}
           <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px" }}>
-            {!categoriaAtiva ? (
+            {!categoriaAtiva && busca.trim() === "" ? (
               <div
                 style={{
                   color: "var(--text-3)",
@@ -540,17 +536,23 @@ export function PedidosClient({ unit, produtos, pedidosIniciais }: Props) {
                         gap: 16,
                       }}
                     >
-                      <span
-                        style={{
-                          flex: 1,
-                          fontSize: 15,
-                          fontWeight: 600,
-                          color: "var(--text)",
-                          lineHeight: 1.3,
-                        }}
-                      >
-                        {prod.nome}
-                      </span>
+                      <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 2 }}>
+                        <span
+                          style={{
+                            fontSize: 15,
+                            fontWeight: 600,
+                            color: "var(--text)",
+                            lineHeight: 1.3,
+                          }}
+                        >
+                          {prod.nome}
+                        </span>
+                        {busca.trim() !== "" && (
+                          <span style={{ fontSize: 11, color: "var(--text-3)" }}>
+                            {LABEL_MAP[prod.categoria] ?? prod.categoria}
+                          </span>
+                        )}
+                      </div>
 
                       <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
                         <button

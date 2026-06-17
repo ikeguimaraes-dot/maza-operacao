@@ -154,6 +154,7 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
   const [unidades, setUnidades] = useState<Record<string, string>>({});
   const [observacoes, setObservacoes] = useState("");
   const [carrinhoAberto, setCarrinhoAberto] = useState(false);
+  const [solicitanteNome, setSolicitanteNome] = useState("");
 
   // ── Estado do histórico ──
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -170,6 +171,7 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
   const [recebidosLocal, setRecebidosLocal] = useState<string[]>([]);
   const [rascunhoSalvoEm, setRascunhoSalvoEm] = useState<string | null>(null);
   const [isFinalizarModalAberto, setIsFinalizarModalAberto] = useState(false);
+  const [isRascunhoModalAberto, setIsRascunhoModalAberto] = useState(false);
   const [assinaturaNome, setAssinaturaNome] = useState("");
 
   // ── Dados derivados ──
@@ -230,10 +232,14 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
     setQtds((prev) => { const next = { ...prev }; delete next[nome]; return next; });
   }
   function handleEnviar() {
+    if (solicitanteNome.trim().length === 0) {
+      toast.error("Informe seu nome antes de enviar");
+      return;
+    }
     startTransition(async () => {
-      const result = await criarPedido(carrinho, observacoes || null);
+      const result = await criarPedido(carrinho, observacoes || null, solicitanteNome.trim());
       if (result.ok) {
-        setQtds({}); setObservacoes(""); setCarrinhoAberto(false);
+        setQtds({}); setObservacoes(""); setSolicitanteNome(""); setCarrinhoAberto(false);
         toast.success("Pedido enviado com sucesso!"); router.refresh();
       } else { toast.error(result.error); }
     });
@@ -250,7 +256,7 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
       ).join("");
       categoriesHtml += `<div class="cat"><div class="cat-title">${cat} <span class="cat-count">(${items.length})</span></div><table><thead><tr><th>Item</th><th>Qtd</th><th>Un.</th></tr></thead><tbody>${rows}</tbody></table></div>`;
     }
-    const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><title>Requisição – ${unit.name}</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;padding:32px;color:#111;font-size:13px}h1{font-size:20px;font-weight:800;margin-bottom:12px}.meta{display:flex;gap:32px;font-size:12px;color:#555;margin-bottom:16px;flex-wrap:wrap}.meta strong{color:#111}hr{border:none;border-top:2px solid #111;margin:16px 0 20px}.cat{margin-bottom:20px}.cat-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#333;padding-bottom:6px;border-bottom:1px solid #ddd;margin-bottom:8px}.cat-count{font-weight:400;color:#777}table{width:100%;border-collapse:collapse}th{text-align:left;font-size:10px;font-weight:700;color:#888;text-transform:uppercase;padding:3px 6px;border-bottom:1px solid #eee}td{padding:5px 6px;border-bottom:1px solid #f0f0f0;font-size:12px}.obs{background:#f7f7f7;border-left:3px solid #ccc;padding:10px 12px;margin-top:20px;font-size:12px;color:#555;font-style:italic}.footer{margin-top:32px;font-size:10px;color:#aaa;text-align:right;border-top:1px solid #eee;padding-top:8px}@media print{@page{margin:16mm}}</style></head><body><h1>REQUISIÇÃO DE COMPRAS</h1><div class="meta"><span><strong>Unidade:</strong> ${unit.name}</span><span><strong>Data:</strong> ${formatDateTime(p.data_pedido)}</span><span><strong>Nº:</strong> ${p.id.slice(0, 8).toUpperCase()}</span><span><strong>Status:</strong> ${p.status}</span></div><hr>${categoriesHtml}${p.observacoes ? `<div class="obs">Obs: ${p.observacoes}</div>` : ""}<div class="footer">Gerado em ${new Date().toLocaleString("pt-BR")} via KPH-OS</div></body></html>`;
+    const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><title>Requisição – ${unit.name}</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;padding:32px;color:#111;font-size:13px}h1{font-size:20px;font-weight:800;margin-bottom:12px}.meta{display:flex;gap:32px;font-size:12px;color:#555;margin-bottom:16px;flex-wrap:wrap}.meta strong{color:#111}hr{border:none;border-top:2px solid #111;margin:16px 0 20px}.cat{margin-bottom:20px}.cat-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#333;padding-bottom:6px;border-bottom:1px solid #ddd;margin-bottom:8px}.cat-count{font-weight:400;color:#777}table{width:100%;border-collapse:collapse}th{text-align:left;font-size:10px;font-weight:700;color:#888;text-transform:uppercase;padding:3px 6px;border-bottom:1px solid #eee}td{padding:5px 6px;border-bottom:1px solid #f0f0f0;font-size:12px}.obs{background:#f7f7f7;border-left:3px solid #ccc;padding:10px 12px;margin-top:20px;font-size:12px;color:#555;font-style:italic}.footer{margin-top:32px;font-size:10px;color:#aaa;text-align:right;border-top:1px solid #eee;padding-top:8px}@media print{@page{margin:16mm}}</style></head><body><h1>REQUISIÇÃO DE COMPRAS</h1><div class="meta"><span><strong>Unidade:</strong> ${unit.name}</span><span><strong>Data:</strong> ${formatDateTime(p.data_pedido)}</span><span><strong>Nº:</strong> ${p.id.slice(0, 8).toUpperCase()}</span><span><strong>Status:</strong> ${p.status}</span>${p.solicitante_nome ? `<span><strong>Solicitado por:</strong> ${p.solicitante_nome}</span>` : ""}</div><hr>${categoriesHtml}${p.observacoes ? `<div class="obs">Obs: ${p.observacoes}</div>` : ""}<div class="footer">Gerado em ${new Date().toLocaleString("pt-BR")} via KPH-OS</div></body></html>`;
     const win = window.open("", "_blank", "width=820,height=680");
     if (win) { win.document.write(html); win.document.close(); win.print(); }
   }
@@ -272,6 +278,7 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
     setPedidoConferencia(p);
     setRascunhoSalvoEm(null);
     setIsFinalizarModalAberto(false);
+    setIsRascunhoModalAberto(false);
     setAssinaturaNome("");
 
     if (p.recebimento?.status === "finalizado") return; // modo leitura
@@ -300,7 +307,7 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
   function handleVoltarRecebimento() {
     setPedidoConferencia(null);
     setQtdsRecebidas({}); setObsItens({}); setObsGeralRecebimento("");
-    setRascunhoSalvoEm(null); setIsFinalizarModalAberto(false); setAssinaturaNome("");
+    setRascunhoSalvoEm(null); setIsFinalizarModalAberto(false); setIsRascunhoModalAberto(false); setAssinaturaNome("");
   }
 
   function getItemStatus(itemId: string, qtdPedida: number): "ok" | "parcial" | "nao_recebido" {
@@ -323,16 +330,18 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
   }
 
   function handleSalvarRascunho() {
-    if (!pedidoConferencia) return;
+    if (!pedidoConferencia || assinaturaNome.trim().length === 0) return;
     startSalvandoTransition(async () => {
       const result = await salvarRascunhoRecebimento(
         pedidoConferencia.id,
         buildItensPayload(),
         obsGeralRecebimento || null,
+        assinaturaNome.trim(),
       );
       if (result.ok) {
         const hora = new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
         setRascunhoSalvoEm(hora);
+        setIsRascunhoModalAberto(false);
         toast.success("Rascunho salvo — você pode continuar depois");
         router.refresh();
       } else { toast.error(result.error); }
@@ -393,7 +402,7 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
       ? `<div class="status-ok">✓ PEDIDO RECEBIDO INTEGRALMENTE</div>`
       : `<div class="status-parcial">⚠ RECEBIMENTO PARCIAL — ${pendentes.length} ${pendentes.length === 1 ? "item pendente" : "itens pendentes"}</div>`;
 
-    const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><title>Recebimento – ${unit.name}</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;padding:32px;color:#111;font-size:13px}h1{font-size:20px;font-weight:800;margin-bottom:4px}.sub{font-size:12px;color:#555;margin-bottom:20px}.meta-table{border-collapse:collapse;margin-bottom:20px;font-size:13px}.meta-table td{padding:4px 16px 4px 0}.meta-table td:first-child{font-weight:600;color:#555;white-space:nowrap}hr{border:none;border-top:2px solid #111;margin:0 0 24px}.section{margin-bottom:28px}h2{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:#333;border-bottom:1px solid #ddd;padding-bottom:6px;margin-bottom:10px}.cat{margin-bottom:20px}.cat-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#333;padding-bottom:6px;border-bottom:1px solid #ddd;margin-bottom:8px}table{width:100%;border-collapse:collapse}th{text-align:left;font-size:10px;font-weight:700;color:#888;text-transform:uppercase;padding:3px 6px;border-bottom:1px solid #eee}td{padding:5px 6px;border-bottom:1px solid #f0f0f0;font-size:12px}.st-ok{color:#15803D;font-weight:700}.st-parcial{color:#92400E;font-weight:700}.st-nao_recebido{color:#7F1D1D;font-weight:700}.status-ok{background:#DCFCE7;border:1px solid #BBF7D0;border-radius:6px;padding:12px 16px;font-size:13px;font-weight:700;color:#15803D;margin-bottom:20px}.status-parcial{background:#FEF3C7;border:1px solid #FDE68A;border-radius:6px;padding:12px 16px;font-size:13px;font-weight:700;color:#92400E;margin-bottom:20px}.assinatura{margin-top:40px;border-top:1px solid #ddd;padding-top:20px}.assinatura .linha{border-bottom:1px solid #111;width:260px;height:24px;margin-bottom:4px}.assinatura .nome{font-size:12px;font-weight:700;color:#333}.assinatura .data{font-size:11px;color:#666;margin-top:4px}.footer-pdf{margin-top:32px;font-size:10px;color:#aaa;text-align:right;border-top:1px solid #eee;padding-top:8px}@media print{@page{margin:16mm}}</style></head><body><h1>RELATÓRIO DE RECEBIMENTO</h1><div class="sub">${unit.name}</div><hr><table class="meta-table"><tr><td>Pedido #</td><td>${p.id.slice(0, 8).toUpperCase()}</td></tr><tr><td>Data do pedido</td><td>${formatDateTime(p.data_pedido)}</td></tr><tr><td>Data do recebimento</td><td>${formatDateTime(rec.created_at)}</td></tr><tr><td>Recebido por</td><td>${rec.assinatura_nome ?? "—"}</td></tr></table><div class="section"><h2>Itens por categoria</h2>${categoriesHtml}</div>${pendentesHtml}${statusGlobal}<div class="assinatura"><div class="linha"></div><div class="nome">${rec.assinatura_nome ?? ""}</div><div class="data">Data: ${formatDateTime(rec.created_at)}</div></div><div class="footer-pdf">Gerado via KPH-OS</div></body></html>`;
+    const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><title>Recebimento – ${unit.name}</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;padding:32px;color:#111;font-size:13px}h1{font-size:20px;font-weight:800;margin-bottom:4px}.sub{font-size:12px;color:#555;margin-bottom:20px}.meta-table{border-collapse:collapse;margin-bottom:20px;font-size:13px}.meta-table td{padding:4px 16px 4px 0}.meta-table td:first-child{font-weight:600;color:#555;white-space:nowrap}hr{border:none;border-top:2px solid #111;margin:0 0 24px}.section{margin-bottom:28px}h2{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:#333;border-bottom:1px solid #ddd;padding-bottom:6px;margin-bottom:10px}.cat{margin-bottom:20px}.cat-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#333;padding-bottom:6px;border-bottom:1px solid #ddd;margin-bottom:8px}table{width:100%;border-collapse:collapse}th{text-align:left;font-size:10px;font-weight:700;color:#888;text-transform:uppercase;padding:3px 6px;border-bottom:1px solid #eee}td{padding:5px 6px;border-bottom:1px solid #f0f0f0;font-size:12px}.st-ok{color:#15803D;font-weight:700}.st-parcial{color:#92400E;font-weight:700}.st-nao_recebido{color:#7F1D1D;font-weight:700}.status-ok{background:#DCFCE7;border:1px solid #BBF7D0;border-radius:6px;padding:12px 16px;font-size:13px;font-weight:700;color:#15803D;margin-bottom:20px}.status-parcial{background:#FEF3C7;border:1px solid #FDE68A;border-radius:6px;padding:12px 16px;font-size:13px;font-weight:700;color:#92400E;margin-bottom:20px}.assinatura{margin-top:40px;border-top:1px solid #ddd;padding-top:20px}.assinatura .linha{border-bottom:1px solid #111;width:260px;height:24px;margin-bottom:4px}.assinatura .nome{font-size:12px;font-weight:700;color:#333}.assinatura .data{font-size:11px;color:#666;margin-top:4px}.footer-pdf{margin-top:32px;font-size:10px;color:#aaa;text-align:right;border-top:1px solid #eee;padding-top:8px}.watermark{background:#FEE2E2;border:2px solid #EF4444;border-radius:6px;padding:10px 16px;margin-bottom:20px;color:#7F1D1D;font-size:13px;font-weight:700;text-align:center;letter-spacing:.5px}@media print{@page{margin:16mm}}</style></head><body>${rec.status === "rascunho" ? '<div class="watermark">⚠ RASCUNHO — Recebimento não finalizado</div>' : ""}<h1>RELATÓRIO DE RECEBIMENTO</h1><div class="sub">${unit.name}</div><hr><table class="meta-table"><tr><td>Pedido #</td><td>${p.id.slice(0, 8).toUpperCase()}</td></tr><tr><td>Data do pedido</td><td>${formatDateTime(p.data_pedido)}</td></tr><tr><td>Data do recebimento</td><td>${formatDateTime(rec.created_at)}</td></tr><tr><td>Recebido por</td><td>${rec.assinatura_nome ?? "—"}</td></tr></table><div class="section"><h2>Itens por categoria</h2>${categoriesHtml}</div>${pendentesHtml}${statusGlobal}<div class="assinatura"><div class="linha"></div><div class="nome">${rec.assinatura_nome ?? ""}</div><div class="data">Data: ${formatDateTime(rec.created_at)}</div></div><div class="footer-pdf">Gerado via KPH-OS</div></body></html>`;
 
     const win = window.open("", "_blank", "width=820,height=680");
     if (win) { win.document.write(html); win.document.close(); win.print(); }
@@ -563,7 +572,7 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
                           </div>
                         )}
                       </div>
-                      {isFinalizado && (
+                      {(isFinalizado || isRascunho) && (
                         <button type="button" onClick={() => handlePdfRecebimento(pedidoConferencia)}
                           style={{ display: "flex", alignItems: "center", gap: 6, height: 36, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text-2)", padding: "0 12px", fontSize: 12, fontWeight: 600, cursor: "pointer", flexShrink: 0 }}>
                           📄 Relatório PDF
@@ -659,10 +668,37 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
                       )}
                     </div>
 
-                    {/* Footer + modal inline — só em modo edição */}
+                    {/* Footer + modais inline — só em modo edição */}
                     {isEditMode && conferenceSummary && (
                       <>
-                        {/* Modal inline de assinatura */}
+                        {/* Modal inline: salvar rascunho */}
+                        {isRascunhoModalAberto && (
+                          <div style={{ flexShrink: 0, padding: "14px 16px", borderTop: "1px solid var(--border)", background: "var(--surface-2)" }}>
+                            <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-2)", marginBottom: 8 }}>Nome de quem está recebendo *</div>
+                            <input
+                              type="text"
+                              placeholder="Digite seu nome completo"
+                              value={assinaturaNome}
+                              onChange={(e) => setAssinaturaNome(e.target.value)}
+                              autoFocus
+                              style={{ width: "100%", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", fontSize: 14, padding: "10px 12px", outline: "none", marginBottom: 10, boxSizing: "border-box" }}
+                            />
+                            <div style={{ display: "flex", gap: 8 }}>
+                              <button type="button" onClick={() => setIsRascunhoModalAberto(false)}
+                                style={{ flex: 1, height: 44, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text-2)", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
+                                Cancelar
+                              </button>
+                              <button type="button"
+                                onClick={handleSalvarRascunho}
+                                disabled={assinaturaNome.trim().length === 0 || isSalvandoPending}
+                                style={{ flex: 2, height: 44, background: "var(--surface)", color: "var(--text-2)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: assinaturaNome.trim().length === 0 || isSalvandoPending ? "not-allowed" : "pointer", opacity: assinaturaNome.trim().length === 0 || isSalvandoPending ? 0.5 : 1 }}>
+                                {isSalvandoPending ? "Salvando…" : "Salvar rascunho"}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Modal inline: finalizar */}
                         {isFinalizarModalAberto && (
                           <div style={{ flexShrink: 0, padding: "14px 16px", borderTop: "1px solid var(--border)", background: "var(--surface-2)" }}>
                             <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-2)", marginBottom: 8 }}>Nome de quem recebeu *</div>
@@ -695,12 +731,14 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
                             🟢 {conferenceSummary.ok} · 🟡 {conferenceSummary.parcial} · 🔴 {conferenceSummary.nao_recebido}
                           </span>
                           <div style={{ display: "flex", gap: 8 }}>
-                            <button type="button" onClick={handleSalvarRascunho} disabled={isSalvandoPending}
-                              style={{ height: 48, padding: "0 16px", background: "var(--surface-2)", color: "var(--text-2)", border: "1px solid var(--border)", borderRadius: 10, fontSize: 13, fontWeight: 600, cursor: isSalvandoPending ? "not-allowed" : "pointer", opacity: isSalvandoPending ? 0.6 : 1, whiteSpace: "nowrap" }}>
-                              {isSalvandoPending ? "Salvando…" : "Salvar rascunho"}
+                            <button type="button"
+                              onClick={() => { setIsRascunhoModalAberto((v) => !v); setIsFinalizarModalAberto(false); setAssinaturaNome(rec?.assinatura_nome ?? ""); }}
+                              disabled={isRascunhoModalAberto}
+                              style={{ height: 48, padding: "0 16px", background: "var(--surface-2)", color: "var(--text-2)", border: "1px solid var(--border)", borderRadius: 10, fontSize: 13, fontWeight: 600, cursor: isRascunhoModalAberto ? "default" : "pointer", whiteSpace: "nowrap" }}>
+                              Salvar rascunho
                             </button>
                             <button type="button"
-                              onClick={() => setIsFinalizarModalAberto((prev) => !prev)}
+                              onClick={() => { setIsFinalizarModalAberto((v) => !v); setIsRascunhoModalAberto(false); setAssinaturaNome(rec?.assinatura_nome ?? ""); }}
                               disabled={isFinalizarModalAberto}
                               style={{ height: 48, padding: "0 20px", background: "#22C55E", color: "#fff", border: "none", borderRadius: 10, fontSize: 14, fontWeight: 700, cursor: isFinalizarModalAberto ? "default" : "pointer", whiteSpace: "nowrap" }}>
                               Finalizar →
@@ -832,7 +870,12 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
                   ))}
                 </div>
               )}
-              <div style={{ marginTop: 16 }}>
+              <div style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+                <div>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: 0.7, marginBottom: 6 }}>Seu nome *</div>
+                  <input type="text" placeholder="Nome de quem está pedindo" value={solicitanteNome} onChange={(e) => setSolicitanteNome(e.target.value)}
+                    style={{ width: "100%", background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", fontSize: 13, padding: "10px 12px", outline: "none", boxSizing: "border-box" }} />
+                </div>
                 <textarea placeholder="Observações (opcional)…" rows={3} value={observacoes} onChange={(e) => setObservacoes(e.target.value)}
                   style={{ width: "100%", background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", fontSize: 13, padding: "10px 12px", outline: "none", resize: "vertical", boxSizing: "border-box" }} />
               </div>
@@ -870,6 +913,9 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
                       <span style={{ fontSize: 13, color: "var(--text-2)", flexShrink: 0 }}>{formatDateTime(p.data_pedido)}</span>
                       <StatusBadge status={p.status} />
                       <span style={{ fontSize: 12, color: "var(--text-3)", flexShrink: 0 }}>{p.purchase_order_items.length} {p.purchase_order_items.length === 1 ? "item" : "itens"}</span>
+                      {(p as PedidoComItens).solicitante_nome && (
+                        <span style={{ fontSize: 12, color: "var(--text-3)", flexShrink: 0 }}>· {(p as PedidoComItens).solicitante_nome}</span>
+                      )}
                       <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }} onClick={(e) => e.stopPropagation()}>
                         <button type="button" onClick={() => handlePdfExport(p)} style={smallBtn()}>📄 PDF</button>
                         {isConfirming ? (

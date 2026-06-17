@@ -22,6 +22,7 @@ export type ItemPedido = {
 
 export type PedidoComItens = PurchaseOrderRow & {
   purchase_order_items: PurchaseOrderItemRow[];
+  solicitante_nome?: string | null;
 };
 
 export async function getProdutos(unitId: string): Promise<ProdutoCatalogo[]> {
@@ -87,6 +88,7 @@ export async function getPedidosRecentes(unitId: string): Promise<PedidoComItens
 export async function criarPedido(
   itens: ItemPedido[],
   observacoes: string | null,
+  solicitanteNome: string,
 ): Promise<ActionResult<PurchaseOrderRow>> {
   if (itens.length === 0) {
     return { ok: false, error: "Adicione pelo menos um item ao pedido." };
@@ -114,6 +116,7 @@ export async function criarPedido(
       status: "enviado",
       observacoes,
       created_by: user.id,
+      solicitante_nome: solicitanteNome || null,
     } as never)
     .select()
     .single()) as unknown as {
@@ -264,6 +267,7 @@ export async function salvarRascunhoRecebimento(
   pedidoId: string,
   itens: RecebimentoItemInput[],
   observacao: string | null,
+  assinaturaNome: string,
 ): Promise<ActionResult<{ recebimentoId: string }>> {
   const user = await requireUser();
   const unit = await getCurrentUnit();
@@ -292,7 +296,7 @@ export async function salvarRascunhoRecebimento(
 
     await (supabase
       .from("recebimentos" as never)
-      .update({ observacao } as never)
+      .update({ observacao, assinatura_nome: assinaturaNome } as never)
       .eq("id", existingId) as unknown as Promise<unknown>);
 
     recId = existingId;
@@ -306,6 +310,7 @@ export async function salvarRascunhoRecebimento(
         recebido_por: user.id,
         observacao,
         status: "rascunho",
+        assinatura_nome: assinaturaNome,
       } as never)
       .select()
       .single()) as unknown as { data: RecRow | null; error: { message: string } | null };

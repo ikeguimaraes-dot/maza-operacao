@@ -48,7 +48,7 @@ async function PedidosSection({ userId }: { userId: string }) {
     );
   }
   const [ingredientes, pedidos] = await Promise.all([
-    getIngredientes(),
+    getIngredientes(unit.id),
     getPedidosRecentes(unit.id),
   ]);
   return (

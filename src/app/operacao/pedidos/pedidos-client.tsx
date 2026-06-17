@@ -4,29 +4,29 @@ import { Fragment, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Trash2, ChevronDown, ChevronRight } from "lucide-react";
-import type { Ingredient, IngredienteCategoria } from "@kph/db/types/compras-ingredientes";
+import type { IngredienteCategoria } from "@kph/db/types/compras-ingredientes";
 import { CATEGORIA_LABELS, INGREDIENTE_CATEGORIAS } from "@kph/db/types/compras-ingredientes";
 import { formatDateBR } from "@/lib/format";
 import type { PurchaseOrderItemRow, PurchaseOrderStatus } from "@kph/db/types/database";
 import { criarPedido } from "./actions";
-import type { ItemPedido, PedidoComItens } from "./actions";
+import type { IngredienteComEstoque, ItemPedido, PedidoComItens } from "./actions";
 
 interface Props {
   unit: { id: string; name: string; brand_id: string | null };
   userId: string;
-  ingredientes: Ingredient[];
+  ingredientes: IngredienteComEstoque[];
   pedidosIniciais: PedidoComItens[];
 }
 
 function StatusBadge({ status }: { status: PurchaseOrderStatus }) {
-  const styles: Record<PurchaseOrderStatus, { background: string; color: string }> = {
-    enviado: { background: "#1D4ED8", color: "#fff" },
+  const map: Record<PurchaseOrderStatus, { background: string; color: string }> = {
+    enviado:  { background: "#1D4ED8", color: "#fff" },
     recebido: { background: "#15803D", color: "#fff" },
-    parcial: { background: "#92400E", color: "#fff" },
-    cancelado: { background: "#7F1D1D", color: "#fff" },
+    parcial:  { background: "#92400E", color: "#fff" },
+    cancelado:{ background: "#7F1D1D", color: "#fff" },
     rascunho: { background: "var(--surface-3)", color: "var(--text-3)" },
   };
-  const s = styles[status] ?? styles.rascunho;
+  const s = map[status] ?? map.rascunho;
   return (
     <span
       style={{
@@ -47,44 +47,45 @@ export function PedidosClient({ unit, ingredientes, pedidosIniciais }: Props) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
 
+  const categoriasPresentes = INGREDIENTE_CATEGORIAS.filter((cat) =>
+    ingredientes.some((i) => i.categoria === cat),
+  );
+
+  const [categoriaAtiva, setCategoriaAtiva] = useState<IngredienteCategoria | null>(
+    categoriasPresentes[0] ?? null,
+  );
+  const [qtds, setQtds] = useState<Record<string, string>>({});
   const [carrinho, setCarrinho] = useState<ItemPedido[]>([]);
-  const [selectedIngId, setSelectedIngId] = useState<string>("");
-  const [qtd, setQtd] = useState<string>("");
-  const [observacoes, setObservacoes] = useState<string>("");
+  const [observacoes, setObservacoes] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  const pedidos = pedidosIniciais;
+  const produtosCategoria = categoriaAtiva
+    ? ingredientes.filter((i) => i.categoria === categoriaAtiva)
+    : [];
 
-  const selectedIng = ingredientes.find((i) => i.id === selectedIngId) ?? null;
-
-  function handleAdicionar() {
-    if (!selectedIng || Number(qtd) <= 0) return;
-    const numQtd = Number(qtd);
+  function handleAdicionar(ing: IngredienteComEstoque) {
+    const numQtd = Number(qtds[ing.id] ?? "");
+    if (numQtd <= 0) return;
     setCarrinho((prev) => {
-      const idx = prev.findIndex((i) => i.ingrediente_id === selectedIng.id);
+      const idx = prev.findIndex((i) => i.ingrediente_id === ing.id);
       if (idx >= 0) {
-        const updated = [...prev];
-        updated[idx] = { ...updated[idx]!, quantidade: updated[idx]!.quantidade + numQtd };
-        return updated;
+        const next = [...prev];
+        next[idx] = { ...next[idx]!, quantidade: next[idx]!.quantidade + numQtd };
+        return next;
       }
       return [
         ...prev,
-        {
-          ingrediente_id: selectedIng.id,
-          nome: selectedIng.nome,
-          unidade: selectedIng.unidade_padrao,
-          quantidade: numQtd,
-        },
+        { ingrediente_id: ing.id, nome: ing.nome, unidade: ing.unidade_padrao, quantidade: numQtd },
       ];
     });
-    setQtd("");
+    setQtds((prev) => ({ ...prev, [ing.id]: "" }));
   }
 
   function handleRemoverItem(ingrediente_id: string) {
     setCarrinho((prev) => prev.filter((i) => i.ingrediente_id !== ingrediente_id));
   }
 
-  function handleQtdChange(ingrediente_id: string, value: string) {
+  function handleQtdCarrinho(ingrediente_id: string, value: string) {
     const num = Number(value);
     if (num <= 0) return;
     setCarrinho((prev) =>
@@ -105,10 +106,6 @@ export function PedidosClient({ unit, ingredientes, pedidosIniciais }: Props) {
       }
     });
   }
-
-  const categoriaComIngredientes = INGREDIENTE_CATEGORIAS.filter((cat) =>
-    ingredientes.some((i) => i.categoria === cat),
-  );
 
   return (
     <div>
@@ -141,255 +138,412 @@ export function PedidosClient({ unit, ingredientes, pedidosIniciais }: Props) {
         </p>
       </header>
 
-      {/* Formulário */}
+      {/* Card principal — duas colunas */}
       <div
         style={{
           background: "var(--surface)",
           border: "1px solid var(--border)",
           borderRadius: 12,
-          padding: "20px 24px",
-          marginBottom: 24,
+          overflow: "hidden",
+          marginBottom: 32,
         }}
       >
-        {/* Row seleção */}
-        <div style={{ display: "flex", gap: 16, alignItems: "flex-end", marginBottom: 20 }}>
-          {/* Produto */}
-          <div style={{ flex: 1 }}>
-            <label
-              style={{
-                display: "block",
-                fontSize: 11,
-                fontWeight: 700,
-                color: "var(--text-3)",
-                marginBottom: 6,
-                textTransform: "uppercase",
-                letterSpacing: 0.8,
-              }}
-            >
-              Produto
-            </label>
-            <select
-              value={selectedIngId}
-              onChange={(e) => setSelectedIngId(e.target.value)}
-              style={{
-                width: "100%",
-                background: "var(--surface-2)",
-                border: "1px solid var(--border)",
-                borderRadius: 8,
-                color: "var(--text)",
-                fontSize: 13,
-                padding: "8px 10px",
-                outline: "none",
-              }}
-            >
-              <option value="">Selecione um produto…</option>
-              {categoriaComIngredientes.map((cat) => (
-                <optgroup
-                  key={cat}
-                  label={CATEGORIA_LABELS[cat as IngredienteCategoria]}
-                >
-                  {ingredientes
-                    .filter((i) => i.categoria === cat)
-                    .map((i) => (
-                      <option key={i.id} value={i.id}>
-                        {i.nome}
-                      </option>
-                    ))}
-                </optgroup>
-              ))}
-            </select>
-          </div>
-
-          {/* Qtd */}
-          <div style={{ width: 140 }}>
-            <label
-              style={{
-                display: "block",
-                fontSize: 11,
-                fontWeight: 700,
-                color: "var(--text-3)",
-                marginBottom: 6,
-                textTransform: "uppercase",
-                letterSpacing: 0.8,
-              }}
-            >
-              Qtd
-            </label>
-            <input
-              type="number"
-              min="0.01"
-              step="0.01"
-              value={qtd}
-              onChange={(e) => setQtd(e.target.value)}
-              style={{
-                width: "100%",
-                background: "var(--surface-2)",
-                border: "1px solid var(--border)",
-                borderRadius: 8,
-                color: "var(--text)",
-                fontSize: 13,
-                padding: "8px 10px",
-                outline: "none",
-                boxSizing: "border-box",
-              }}
-            />
-            <div style={{ fontSize: 11, color: "var(--text-3)", marginTop: 4 }}>
-              {selectedIng ? selectedIng.unidade_padrao : "—"}
-            </div>
-          </div>
-
-          {/* Botão Adicionar */}
-          <div>
-            <button
-              onClick={handleAdicionar}
-              disabled={!selectedIng || Number(qtd) <= 0}
-              style={{
-                background: "var(--brand)",
-                color: "#fff",
-                border: "none",
-                borderRadius: 8,
-                padding: "9px 18px",
-                fontSize: 13,
-                fontWeight: 700,
-                cursor: !selectedIng || Number(qtd) <= 0 ? "not-allowed" : "pointer",
-                opacity: !selectedIng || Number(qtd) <= 0 ? 0.5 : 1,
-              }}
-            >
-              Adicionar
-            </button>
-          </div>
-        </div>
-
-        {/* Tabela do carrinho */}
-        <table
-          style={{
-            width: "100%",
-            borderCollapse: "collapse",
-            fontSize: 13,
-          }}
-        >
-          <thead>
-            <tr>
-              {["Produto", "Unidade", "Qtd", ""].map((col) => (
-                <th
-                  key={col}
-                  style={{
-                    textAlign: "left",
-                    fontSize: 11,
-                    fontWeight: 700,
-                    color: "var(--text-3)",
-                    textTransform: "uppercase",
-                    letterSpacing: 0.8,
-                    padding: "6px 8px",
-                    borderBottom: "1px solid var(--border)",
-                  }}
-                >
-                  {col}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {carrinho.length === 0 ? (
-              <tr>
-                <td
-                  colSpan={4}
-                  style={{
-                    padding: "16px 8px",
-                    color: "var(--text-3)",
-                    fontSize: 12,
-                    textAlign: "center",
-                  }}
-                >
-                  Nenhum item adicionado ainda.
-                </td>
-              </tr>
-            ) : (
-              carrinho.map((item) => (
-                <tr key={item.ingrediente_id}>
-                  <td style={{ padding: "8px 8px", color: "var(--text)" }}>{item.nome}</td>
-                  <td style={{ padding: "8px 8px", color: "var(--text-2)" }}>{item.unidade}</td>
-                  <td style={{ padding: "8px 8px" }}>
-                    <input
-                      type="number"
-                      min="0.01"
-                      value={item.quantidade}
-                      onChange={(e) => handleQtdChange(item.ingrediente_id, e.target.value)}
-                      style={{
-                        width: 80,
-                        background: "var(--surface-2)",
-                        border: "1px solid var(--border)",
-                        borderRadius: 6,
-                        color: "var(--text)",
-                        fontSize: 13,
-                        padding: "4px 8px",
-                        outline: "none",
-                      }}
-                    />
-                  </td>
-                  <td style={{ padding: "8px 8px" }}>
-                    <button
-                      onClick={() => handleRemoverItem(item.ingrediente_id)}
-                      style={{
-                        background: "none",
-                        border: "none",
-                        cursor: "pointer",
-                        color: "#EF4444",
-                        padding: 4,
-                        display: "flex",
-                        alignItems: "center",
-                      }}
-                    >
-                      <Trash2 size={16} />
-                    </button>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-
-        {/* Observações */}
-        <div style={{ marginTop: 16 }}>
-          <textarea
-            placeholder="Observações (opcional)…"
-            rows={2}
-            value={observacoes}
-            onChange={(e) => setObservacoes(e.target.value)}
+        <div style={{ display: "flex", alignItems: "stretch" }}>
+          {/* Coluna esquerda — categorias */}
+          <nav
             style={{
-              width: "100%",
-              background: "var(--surface-2)",
-              border: "1px solid var(--border)",
-              borderRadius: 8,
-              color: "var(--text)",
-              fontSize: 13,
-              padding: "8px 10px",
-              outline: "none",
-              resize: "vertical",
-              boxSizing: "border-box",
-            }}
-          />
-        </div>
-
-        {/* Botão Enviar */}
-        <div style={{ marginTop: 16, display: "flex", justifyContent: "flex-end" }}>
-          <button
-            onClick={handleEnviar}
-            disabled={carrinho.length === 0 || isPending}
-            style={{
-              background: "#22C55E",
-              color: "#fff",
-              border: "none",
-              borderRadius: 8,
-              padding: "10px 24px",
-              fontSize: 14,
-              fontWeight: 700,
-              cursor: carrinho.length === 0 || isPending ? "not-allowed" : "pointer",
-              opacity: carrinho.length === 0 || isPending ? 0.5 : 1,
+              width: 196,
+              flexShrink: 0,
+              borderRight: "1px solid var(--border)",
+              padding: "12px 8px",
             }}
           >
-            {isPending ? "Enviando…" : "Enviar Pedido"}
-          </button>
+            {categoriasPresentes.length === 0 ? (
+              <div style={{ padding: "12px 8px", color: "var(--text-3)", fontSize: 12 }}>
+                Nenhum produto disponível.
+              </div>
+            ) : (
+              categoriasPresentes.map((cat) => {
+                const isActive = cat === categoriaAtiva;
+                const criticos = ingredientes.filter(
+                  (i) =>
+                    i.categoria === cat &&
+                    i.estoque_minimo > 0 &&
+                    i.estoque_real <= i.estoque_minimo,
+                ).length;
+                return (
+                  <button
+                    key={cat}
+                    type="button"
+                    onClick={() => setCategoriaAtiva(cat)}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 6,
+                      width: "100%",
+                      padding: "8px 10px",
+                      marginBottom: 2,
+                      background: isActive ? "var(--surface-2)" : "transparent",
+                      border: "none",
+                      borderRadius: 8,
+                      color: isActive ? "var(--text)" : "var(--text-2)",
+                      fontWeight: isActive ? 600 : 500,
+                      fontSize: 13,
+                      cursor: "pointer",
+                      textAlign: "left",
+                    }}
+                  >
+                    <span
+                      style={{
+                        flex: 1,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {CATEGORIA_LABELS[cat]}
+                    </span>
+                    {criticos > 0 && (
+                      <span
+                        style={{
+                          fontSize: 10,
+                          fontWeight: 700,
+                          background: "#7F1D1D",
+                          color: "#FCA5A5",
+                          borderRadius: 99,
+                          padding: "1px 6px",
+                          flexShrink: 0,
+                        }}
+                      >
+                        {criticos}
+                      </span>
+                    )}
+                  </button>
+                );
+              })
+            )}
+          </nav>
+
+          {/* Coluna direita — produtos e carrinho */}
+          <div style={{ flex: 1, minWidth: 0, padding: "20px 24px" }}>
+            {/* Tabela de produtos */}
+            {produtosCategoria.length === 0 ? (
+              <div
+                style={{
+                  color: "var(--text-3)",
+                  fontSize: 13,
+                  padding: "32px 0",
+                  textAlign: "center",
+                }}
+              >
+                {categoriaAtiva
+                  ? "Nenhum produto nesta categoria."
+                  : "Selecione uma categoria à esquerda."}
+              </div>
+            ) : (
+              <table
+                style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, marginBottom: 24 }}
+              >
+                <thead>
+                  <tr>
+                    {(
+                      [
+                        { label: "Produto", align: "left" as const, width: undefined },
+                        { label: "Mín", align: "center" as const, width: 60 },
+                        { label: "Real", align: "center" as const, width: 60 },
+                        { label: "Qtd", align: "left" as const, width: 96 },
+                        { label: "Un.", align: "left" as const, width: 44 },
+                        { label: "", align: "left" as const, width: 110 },
+                      ] as const
+                    ).map((col, i) => (
+                      <th
+                        key={i}
+                        style={{
+                          textAlign: col.align,
+                          fontSize: 11,
+                          fontWeight: 700,
+                          color: "var(--text-3)",
+                          textTransform: "uppercase",
+                          letterSpacing: 0.8,
+                          padding: "6px 8px",
+                          borderBottom: "1px solid var(--border)",
+                          width: col.width,
+                        }}
+                      >
+                        {col.label}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {produtosCategoria.map((ing) => {
+                    const critico =
+                      ing.estoque_minimo > 0 && ing.estoque_real <= ing.estoque_minimo;
+                    const qtdVal = qtds[ing.id] ?? "";
+                    const canAdd = Number(qtdVal) > 0;
+                    return (
+                      <tr
+                        key={ing.id}
+                        style={{
+                          borderLeft: critico
+                            ? "3px solid #EF4444"
+                            : "3px solid transparent",
+                        }}
+                      >
+                        <td style={{ padding: "9px 8px", color: "var(--text)" }}>
+                          {ing.nome}
+                          {critico && (
+                            <span
+                              style={{
+                                marginLeft: 8,
+                                fontSize: 10,
+                                color: "#EF4444",
+                                fontWeight: 700,
+                              }}
+                            >
+                              ⚠ crítico
+                            </span>
+                          )}
+                        </td>
+                        <td
+                          style={{
+                            padding: "9px 8px",
+                            textAlign: "center",
+                            color: "var(--text-3)",
+                            fontSize: 12,
+                          }}
+                        >
+                          {ing.estoque_minimo}
+                        </td>
+                        <td
+                          style={{
+                            padding: "9px 8px",
+                            textAlign: "center",
+                            fontSize: 12,
+                            fontWeight: critico ? 700 : 400,
+                            color: critico ? "#EF4444" : "var(--text-2)",
+                          }}
+                        >
+                          {ing.estoque_real}
+                        </td>
+                        <td style={{ padding: "9px 8px" }}>
+                          <input
+                            type="number"
+                            min="0.01"
+                            step="0.01"
+                            value={qtdVal}
+                            onChange={(e) =>
+                              setQtds((prev) => ({ ...prev, [ing.id]: e.target.value }))
+                            }
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") handleAdicionar(ing);
+                            }}
+                            style={{
+                              width: 80,
+                              background: "var(--surface-2)",
+                              border: "1px solid var(--border)",
+                              borderRadius: 6,
+                              color: "var(--text)",
+                              fontSize: 13,
+                              padding: "5px 8px",
+                              outline: "none",
+                            }}
+                          />
+                        </td>
+                        <td
+                          style={{
+                            padding: "9px 8px",
+                            color: "var(--text-3)",
+                            fontSize: 11,
+                            fontWeight: 600,
+                          }}
+                        >
+                          {ing.unidade_padrao}
+                        </td>
+                        <td style={{ padding: "9px 8px" }}>
+                          <button
+                            type="button"
+                            onClick={() => handleAdicionar(ing)}
+                            disabled={!canAdd}
+                            style={{
+                              background: canAdd ? "var(--brand)" : "var(--surface-3)",
+                              color: canAdd ? "#fff" : "var(--text-3)",
+                              border: "none",
+                              borderRadius: 6,
+                              padding: "5px 12px",
+                              fontSize: 12,
+                              fontWeight: 700,
+                              cursor: canAdd ? "pointer" : "not-allowed",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            + Adicionar
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+
+            {/* Carrinho */}
+            <div
+              style={{ borderTop: "1px solid var(--border)", paddingTop: 20 }}
+            >
+              <div
+                style={{
+                  fontSize: 11,
+                  fontWeight: 700,
+                  color: "var(--text-3)",
+                  textTransform: "uppercase",
+                  letterSpacing: 0.8,
+                  marginBottom: 12,
+                }}
+              >
+                Carrinho{carrinho.length > 0 ? ` (${carrinho.length})` : ""}
+              </div>
+
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <thead>
+                  <tr>
+                    {["Produto", "Qtd", "Un.", ""].map((col) => (
+                      <th
+                        key={col}
+                        style={{
+                          textAlign: "left",
+                          fontSize: 11,
+                          fontWeight: 700,
+                          color: "var(--text-3)",
+                          textTransform: "uppercase",
+                          letterSpacing: 0.8,
+                          padding: "5px 8px",
+                          borderBottom: "1px solid var(--border)",
+                        }}
+                      >
+                        {col}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {carrinho.length === 0 ? (
+                    <tr>
+                      <td
+                        colSpan={4}
+                        style={{
+                          padding: "14px 8px",
+                          color: "var(--text-3)",
+                          fontSize: 12,
+                          textAlign: "center",
+                        }}
+                      >
+                        Nenhum item adicionado.
+                      </td>
+                    </tr>
+                  ) : (
+                    carrinho.map((item) => (
+                      <tr key={item.ingrediente_id}>
+                        <td style={{ padding: "7px 8px", color: "var(--text)" }}>
+                          {item.nome}
+                        </td>
+                        <td style={{ padding: "7px 8px" }}>
+                          <input
+                            type="number"
+                            min="0.01"
+                            value={item.quantidade}
+                            onChange={(e) =>
+                              handleQtdCarrinho(item.ingrediente_id, e.target.value)
+                            }
+                            style={{
+                              width: 70,
+                              background: "var(--surface-2)",
+                              border: "1px solid var(--border)",
+                              borderRadius: 6,
+                              color: "var(--text)",
+                              fontSize: 13,
+                              padding: "4px 7px",
+                              outline: "none",
+                            }}
+                          />
+                        </td>
+                        <td
+                          style={{
+                            padding: "7px 8px",
+                            color: "var(--text-3)",
+                            fontSize: 11,
+                            fontWeight: 600,
+                          }}
+                        >
+                          {item.unidade}
+                        </td>
+                        <td style={{ padding: "7px 8px" }}>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoverItem(item.ingrediente_id)}
+                            style={{
+                              background: "none",
+                              border: "none",
+                              cursor: "pointer",
+                              color: "#EF4444",
+                              padding: 4,
+                              display: "flex",
+                              alignItems: "center",
+                            }}
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+
+              <div style={{ marginTop: 14 }}>
+                <textarea
+                  placeholder="Observações (opcional)…"
+                  rows={2}
+                  value={observacoes}
+                  onChange={(e) => setObservacoes(e.target.value)}
+                  style={{
+                    width: "100%",
+                    background: "var(--surface-2)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 8,
+                    color: "var(--text)",
+                    fontSize: 13,
+                    padding: "8px 10px",
+                    outline: "none",
+                    resize: "vertical",
+                    boxSizing: "border-box",
+                  }}
+                />
+              </div>
+
+              <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end" }}>
+                <button
+                  type="button"
+                  onClick={handleEnviar}
+                  disabled={carrinho.length === 0 || isPending}
+                  style={{
+                    background: "#22C55E",
+                    color: "#fff",
+                    border: "none",
+                    borderRadius: 8,
+                    padding: "10px 28px",
+                    fontSize: 14,
+                    fontWeight: 700,
+                    cursor: carrinho.length === 0 || isPending ? "not-allowed" : "pointer",
+                    opacity: carrinho.length === 0 || isPending ? 0.5 : 1,
+                  }}
+                >
+                  {isPending ? "Enviando…" : "Enviar Pedido"}
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -407,7 +561,7 @@ export function PedidosClient({ unit, ingredientes, pedidosIniciais }: Props) {
           Pedidos Recentes
         </h2>
 
-        {pedidos.length === 0 ? (
+        {pedidosIniciais.length === 0 ? (
           <div
             style={{
               color: "var(--text-3)",
@@ -442,7 +596,7 @@ export function PedidosClient({ unit, ingredientes, pedidosIniciais }: Props) {
               </tr>
             </thead>
             <tbody>
-              {pedidos.map((p) => (
+              {pedidosIniciais.map((p) => (
                 <Fragment key={p.id}>
                   <tr>
                     <td style={{ padding: "10px 8px", color: "var(--text)" }}>
@@ -456,6 +610,7 @@ export function PedidosClient({ unit, ingredientes, pedidosIniciais }: Props) {
                     </td>
                     <td style={{ padding: "10px 8px" }}>
                       <button
+                        type="button"
                         onClick={() => setExpandedId(expandedId === p.id ? null : p.id)}
                         style={{
                           background: "none",
@@ -484,6 +639,18 @@ export function PedidosClient({ unit, ingredientes, pedidosIniciais }: Props) {
                           background: "var(--surface-2)",
                         }}
                       >
+                        {p.observacoes && (
+                          <p
+                            style={{
+                              fontSize: 12,
+                              color: "var(--text-3)",
+                              margin: "0 0 8px",
+                              fontStyle: "italic",
+                            }}
+                          >
+                            {p.observacoes}
+                          </p>
+                        )}
                         <ul style={{ margin: 0, padding: 0, listStyle: "none" }}>
                           {p.purchase_order_items.map((item: PurchaseOrderItemRow) => (
                             <li

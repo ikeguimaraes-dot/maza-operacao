@@ -5,8 +5,17 @@ import { createSupabaseServerClient } from "@kph/db/supabase/server";
 import { requireUser } from "@kph/auth/server";
 import { getCurrentUnit } from "@kph/auth/unit";
 import type { ActionResult } from "@/lib/result";
-import type { Ingredient } from "@kph/db/types/compras-ingredientes";
+import type { IngredienteCategoria, UnidadePadrao } from "@kph/db/types/compras-ingredientes";
 import type { PurchaseOrderRow, PurchaseOrderItemRow } from "@kph/db/types/database";
+
+export type IngredienteComEstoque = {
+  id: string;
+  nome: string;
+  categoria: IngredienteCategoria;
+  unidade_padrao: UnidadePadrao;
+  estoque_minimo: number;
+  estoque_real: number;
+};
 
 export type ItemPedido = {
   ingrediente_id: string;
@@ -19,23 +28,58 @@ export type PedidoComItens = PurchaseOrderRow & {
   purchase_order_items: PurchaseOrderItemRow[];
 };
 
-export async function getIngredientes(): Promise<Ingredient[]> {
+export async function getIngredientes(unitId: string): Promise<IngredienteComEstoque[]> {
   const supabase = await createSupabaseServerClient();
   if (!supabase) return [];
-  const { data, error } = (await supabase
+
+  type IngRow = {
+    id: string;
+    nome: string;
+    categoria: IngredienteCategoria;
+    unidade_padrao: UnidadePadrao;
+  };
+  type StockRow = {
+    ingredient_id: string;
+    estoque_minimo: number | string;
+    estoque_real: number | string;
+  };
+
+  const { data: ings, error: errIng } = (await supabase
     .from("ingredients" as never)
-    .select("*")
+    .select("id, nome, categoria, unidade_padrao")
     .eq("ativo", true)
     .order("categoria")
     .order("nome")) as unknown as {
-    data: Ingredient[] | null;
+    data: IngRow[] | null;
     error: { message: string } | null;
   };
-  if (error) {
-    console.error("[getIngredientes]", error.message);
+
+  if (errIng) {
+    console.error("[getIngredientes] ings:", errIng.message);
     return [];
   }
-  return data ?? [];
+
+  const { data: stocks } = (await supabase
+    .from("ingredient_stock" as never)
+    .select("ingredient_id, estoque_minimo, estoque_real")
+    .eq("unit_id", unitId)) as unknown as {
+    data: StockRow[] | null;
+    error: { message: string } | null;
+  };
+
+  const stockMap = new Map((stocks ?? []).map((s) => [s.ingredient_id, s]));
+
+  return (ings ?? []).map((i) => {
+    const s = stockMap.get(i.id);
+    return {
+      id: i.id,
+      nome: i.nome,
+      categoria: i.categoria,
+      unidade_padrao: i.unidade_padrao,
+      estoque_minimo: Number(s?.estoque_minimo ?? 0),
+      estoque_real: Number(s?.estoque_real ?? 0),
+    };
+  });
 }
 
 export async function getPedidosRecentes(unitId: string): Promise<PedidoComItens[]> {
@@ -73,17 +117,11 @@ export async function criarPedido(
   const user = await requireUser();
   const unit = await getCurrentUnit();
 
-  if (!unit) {
-    return { ok: false, error: "Nenhuma unidade selecionada." };
-  }
-  if (!unit.brand_id) {
-    return { ok: false, error: "Unidade sem marca associada." };
-  }
+  if (!unit) return { ok: false, error: "Nenhuma unidade selecionada." };
+  if (!unit.brand_id) return { ok: false, error: "Unidade sem marca associada." };
 
   const supabase = await createSupabaseServerClient();
-  if (!supabase) {
-    return { ok: false, error: "Erro ao conectar ao banco de dados." };
-  }
+  if (!supabase) return { ok: false, error: "Erro ao conectar ao banco de dados." };
 
   const { data: pedido, error: pedidoError } = (await supabase
     .from("purchase_orders" as never)

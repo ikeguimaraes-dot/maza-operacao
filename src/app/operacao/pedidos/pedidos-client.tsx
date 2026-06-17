@@ -272,32 +272,54 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
   }
 
   function handleEnviar() {
-    if (carrinho.length === 0) return;
     if (solicitanteNome.trim().length === 0) {
       toast.error("Informe seu nome antes de enviar");
       return;
     }
     startTransition(async () => {
-      const result = await criarPedido(carrinho, observacoes || null, solicitanteNome.trim());
-      if (result.ok) {
-        resetCarrinho();
-        setSolicitanteNome("");
-        setRascunhoId(null);
-        toast.success("Pedido enviado com sucesso!");
-        router.refresh();
-      } else { toast.error(result.error); }
+      const itensParaEnviar = Object.entries(qtds)
+        .filter(([, v]) => v > 0)
+        .map(([nome, quantidade]) => ({
+          ingrediente_id: nome, nome, quantidade, unidade: unidades[nome] ?? "kg",
+        }));
+
+      if (itensParaEnviar.length === 0) {
+        toast.error("Adicione pelo menos um item ao pedido");
+        return;
+      }
+
+      const result = await criarPedido(itensParaEnviar, observacoes || null, solicitanteNome.trim());
+
+      if (!result.ok) { toast.error(result.error); return; }
+
+      resetCarrinho();
+      setSolicitanteNome("");
+      setRascunhoId(null);
+      toast.success("Pedido enviado com sucesso!");
+      router.refresh();
     });
   }
 
   function handleSalvarRascunhoPedido() {
-    if (carrinho.length === 0) return;
     startSalvandoPedidoTransition(async () => {
-      const result = await salvarRascunhoPedido(carrinho, solicitanteNome, observacoes || null);
-      if (result.ok) {
-        setRascunhoId(result.data.pedidoId);
-        resetCarrinho();
-        toast.success("Rascunho salvo");
-      } else { toast.error(result.error); }
+      const itensParaSalvar = Object.entries(qtds)
+        .filter(([, v]) => v > 0)
+        .map(([nome, quantidade]) => ({
+          ingrediente_id: nome, nome, quantidade, unidade: unidades[nome] ?? "kg",
+        }));
+
+      if (itensParaSalvar.length === 0) {
+        toast.error("Adicione pelo menos um item antes de salvar");
+        return;
+      }
+
+      const result = await salvarRascunhoPedido(itensParaSalvar, solicitanteNome, observacoes || null);
+
+      if (!result.ok) { toast.error(result.error); return; }
+
+      setRascunhoId(result.data.pedidoId);
+      resetCarrinho();
+      toast.success("Rascunho salvo");
     });
   }
 

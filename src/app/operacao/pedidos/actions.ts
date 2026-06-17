@@ -166,3 +166,33 @@ export async function criarPedido(
   revalidatePath("/operacao/pedidos");
   return { ok: true, data: pedido };
 }
+
+export async function atualizarEstoque(
+  ingredienteId: string,
+  unitId: string,
+  estoqueMinimo: number,
+  estoqueReal: number,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const supabase = await createSupabaseServerClient();
+  if (!supabase) return { ok: false, error: "Supabase indisponível." };
+
+  const { error } = (await supabase
+    .from("ingredient_stock" as never)
+    .upsert(
+      {
+        ingredient_id: ingredienteId,
+        unit_id: unitId,
+        estoque_minimo: estoqueMinimo,
+        estoque_real: estoqueReal,
+        updated_at: new Date().toISOString(),
+      } as never,
+      { onConflict: "ingredient_id,unit_id" },
+    )) as unknown as { error: { message: string } | null };
+
+  if (error) {
+    console.error("[atualizarEstoque]", error.message);
+    return { ok: false, error: error.message };
+  }
+
+  return { ok: true };
+}

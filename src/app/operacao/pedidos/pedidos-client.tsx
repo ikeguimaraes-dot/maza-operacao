@@ -8,7 +8,7 @@ import type { IngredienteCategoria } from "@kph/db/types/compras-ingredientes";
 import { CATEGORIA_LABELS, INGREDIENTE_CATEGORIAS } from "@kph/db/types/compras-ingredientes";
 import { formatDateBR } from "@/lib/format";
 import type { PurchaseOrderItemRow, PurchaseOrderStatus } from "@kph/db/types/database";
-import { criarPedido } from "./actions";
+import { criarPedido, atualizarEstoque } from "./actions";
 import type { IngredienteComEstoque, ItemPedido, PedidoComItens } from "./actions";
 
 interface Props {
@@ -54,28 +54,59 @@ export function PedidosClient({ unit, ingredientes, pedidosIniciais }: Props) {
   const [categoriaAtiva, setCategoriaAtiva] = useState<IngredienteCategoria | null>(
     categoriasPresentes[0] ?? null,
   );
+  const [busca, setBusca] = useState("");
   const [qtds, setQtds] = useState<Record<string, string>>({});
+  // estoque editado localmente: { minimo, real } como strings (para inputs)
+  const [estoques, setEstoques] = useState<Record<string, { minimo: string; real: string }>>({});
+  // unidade override por ingrediente (para o select de g/un)
+  const [unidades, setUnidades] = useState<Record<string, string>>({});
   const [carrinho, setCarrinho] = useState<ItemPedido[]>([]);
   const [observacoes, setObservacoes] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  function handleCategoriaChange(cat: IngredienteCategoria) {
+    setCategoriaAtiva(cat);
+    setBusca("");
+  }
 
   const produtosCategoria = categoriaAtiva
     ? ingredientes.filter((i) => i.categoria === categoriaAtiva)
     : [];
 
+  const produtosFiltrados =
+    busca === ""
+      ? produtosCategoria
+      : produtosCategoria.filter((i) =>
+          i.nome.toLowerCase().includes(busca.toLowerCase()),
+        );
+
+  function getUnidade(ing: IngredienteComEstoque): string {
+    return unidades[ing.id] ?? ing.unidade_padrao;
+  }
+
+  function handleUnidadeChange(ing: IngredienteComEstoque, novaUnidade: string) {
+    setUnidades((prev) => ({ ...prev, [ing.id]: novaUnidade }));
+    setCarrinho((prev) =>
+      prev.map((i) =>
+        i.ingrediente_id === ing.id ? { ...i, unidade: novaUnidade } : i,
+      ),
+    );
+  }
+
   function handleAdicionar(ing: IngredienteComEstoque) {
     const numQtd = Number(qtds[ing.id] ?? "");
     if (numQtd <= 0) return;
+    const unidade = getUnidade(ing);
     setCarrinho((prev) => {
       const idx = prev.findIndex((i) => i.ingrediente_id === ing.id);
       if (idx >= 0) {
         const next = [...prev];
-        next[idx] = { ...next[idx]!, quantidade: next[idx]!.quantidade + numQtd };
+        next[idx] = { ...next[idx]!, quantidade: next[idx]!.quantidade + numQtd, unidade };
         return next;
       }
       return [
         ...prev,
-        { ingrediente_id: ing.id, nome: ing.nome, unidade: ing.unidade_padrao, quantidade: numQtd },
+        { ingrediente_id: ing.id, nome: ing.nome, unidade, quantidade: numQtd },
       ];
     });
     setQtds((prev) => ({ ...prev, [ing.id]: "" }));
@@ -91,6 +122,21 @@ export function PedidosClient({ unit, ingredientes, pedidosIniciais }: Props) {
     setCarrinho((prev) =>
       prev.map((i) => (i.ingrediente_id === ingrediente_id ? { ...i, quantidade: num } : i)),
     );
+  }
+
+  function handleEstoqueBlur(ing: IngredienteComEstoque) {
+    const minimoVal = estoques[ing.id]?.minimo;
+    const realVal = estoques[ing.id]?.real;
+    if (minimoVal === undefined && realVal === undefined) return;
+    const minimo = Number(minimoVal ?? ing.estoque_minimo);
+    const real = Number(realVal ?? ing.estoque_real);
+    void atualizarEstoque(ing.id, unit.id, minimo, real).then((result) => {
+      if (result.ok) {
+        toast("Estoque atualizado", { duration: 2000 });
+      } else {
+        toast.error(result.error);
+      }
+    });
   }
 
   function handleEnviar() {
@@ -165,17 +211,16 @@ export function PedidosClient({ unit, ingredientes, pedidosIniciais }: Props) {
             ) : (
               categoriasPresentes.map((cat) => {
                 const isActive = cat === categoriaAtiva;
-                const criticos = ingredientes.filter(
-                  (i) =>
-                    i.categoria === cat &&
-                    i.estoque_minimo > 0 &&
-                    i.estoque_real <= i.estoque_minimo,
-                ).length;
+                const criticos = ingredientes.filter((i) => {
+                  const min = Number(estoques[i.id]?.minimo ?? i.estoque_minimo);
+                  const real = Number(estoques[i.id]?.real ?? i.estoque_real);
+                  return i.categoria === cat && min > 0 && real <= min;
+                }).length;
                 return (
                   <button
                     key={cat}
                     type="button"
-                    onClick={() => setCategoriaAtiva(cat)}
+                    onClick={() => handleCategoriaChange(cat)}
                     style={{
                       display: "flex",
                       alignItems: "center",
@@ -227,8 +272,7 @@ export function PedidosClient({ unit, ingredientes, pedidosIniciais }: Props) {
 
           {/* Coluna direita — produtos e carrinho */}
           <div style={{ flex: 1, minWidth: 0, padding: "20px 24px" }}>
-            {/* Tabela de produtos */}
-            {produtosCategoria.length === 0 ? (
+            {!categoriaAtiva ? (
               <div
                 style={{
                   color: "var(--text-3)",
@@ -237,161 +281,275 @@ export function PedidosClient({ unit, ingredientes, pedidosIniciais }: Props) {
                   textAlign: "center",
                 }}
               >
-                {categoriaAtiva
-                  ? "Nenhum produto nesta categoria."
-                  : "Selecione uma categoria à esquerda."}
+                Selecione uma categoria à esquerda.
               </div>
             ) : (
-              <table
-                style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, marginBottom: 24 }}
-              >
-                <thead>
-                  <tr>
-                    {(
-                      [
-                        { label: "Produto", align: "left" as const, width: undefined },
-                        { label: "Mín", align: "center" as const, width: 60 },
-                        { label: "Real", align: "center" as const, width: 60 },
-                        { label: "Qtd", align: "left" as const, width: 96 },
-                        { label: "Un.", align: "left" as const, width: 44 },
-                        { label: "", align: "left" as const, width: 110 },
-                      ] as const
-                    ).map((col, i) => (
-                      <th
-                        key={i}
-                        style={{
-                          textAlign: col.align,
-                          fontSize: 11,
-                          fontWeight: 700,
-                          color: "var(--text-3)",
-                          textTransform: "uppercase",
-                          letterSpacing: 0.8,
-                          padding: "6px 8px",
-                          borderBottom: "1px solid var(--border)",
-                          width: col.width,
-                        }}
-                      >
-                        {col.label}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {produtosCategoria.map((ing) => {
-                    const critico =
-                      ing.estoque_minimo > 0 && ing.estoque_real <= ing.estoque_minimo;
-                    const qtdVal = qtds[ing.id] ?? "";
-                    const canAdd = Number(qtdVal) > 0;
-                    return (
-                      <tr
-                        key={ing.id}
-                        style={{
-                          borderLeft: critico
-                            ? "3px solid #EF4444"
-                            : "3px solid transparent",
-                        }}
-                      >
-                        <td style={{ padding: "9px 8px", color: "var(--text)" }}>
-                          {ing.nome}
-                          {critico && (
-                            <span
-                              style={{
-                                marginLeft: 8,
-                                fontSize: 10,
-                                color: "#EF4444",
-                                fontWeight: 700,
-                              }}
-                            >
-                              ⚠ crítico
-                            </span>
-                          )}
-                        </td>
-                        <td
-                          style={{
-                            padding: "9px 8px",
-                            textAlign: "center",
-                            color: "var(--text-3)",
-                            fontSize: 12,
-                          }}
-                        >
-                          {ing.estoque_minimo}
-                        </td>
-                        <td
-                          style={{
-                            padding: "9px 8px",
-                            textAlign: "center",
-                            fontSize: 12,
-                            fontWeight: critico ? 700 : 400,
-                            color: critico ? "#EF4444" : "var(--text-2)",
-                          }}
-                        >
-                          {ing.estoque_real}
-                        </td>
-                        <td style={{ padding: "9px 8px" }}>
-                          <input
-                            type="number"
-                            min="0.01"
-                            step="0.01"
-                            value={qtdVal}
-                            onChange={(e) =>
-                              setQtds((prev) => ({ ...prev, [ing.id]: e.target.value }))
-                            }
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") handleAdicionar(ing);
-                            }}
+              <>
+                {/* Campo de busca */}
+                <input
+                  type="search"
+                  placeholder="Buscar produto…"
+                  value={busca}
+                  onChange={(e) => setBusca(e.target.value)}
+                  style={{
+                    width: "100%",
+                    background: "var(--surface-2)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 8,
+                    color: "var(--text)",
+                    fontSize: 13,
+                    padding: "7px 10px",
+                    outline: "none",
+                    marginBottom: 12,
+                    boxSizing: "border-box",
+                  }}
+                />
+
+                {/* Tabela de produtos */}
+                {produtosFiltrados.length === 0 ? (
+                  <div
+                    style={{
+                      color: "var(--text-3)",
+                      fontSize: 13,
+                      padding: "24px 0",
+                      textAlign: "center",
+                    }}
+                  >
+                    {busca
+                      ? `Nenhum resultado para "${busca}".`
+                      : "Nenhum produto nesta categoria."}
+                  </div>
+                ) : (
+                  <table
+                    style={{
+                      width: "100%",
+                      borderCollapse: "collapse",
+                      fontSize: 13,
+                      marginBottom: 24,
+                    }}
+                  >
+                    <thead>
+                      <tr>
+                        {(
+                          [
+                            { label: "Produto", align: "left" as const, width: undefined },
+                            { label: "Mín", align: "center" as const, width: 80 },
+                            { label: "Real", align: "center" as const, width: 80 },
+                            { label: "Qtd", align: "left" as const, width: 96 },
+                            { label: "Un.", align: "left" as const, width: 70 },
+                            { label: "", align: "left" as const, width: 110 },
+                          ] as const
+                        ).map((col, i) => (
+                          <th
+                            key={i}
                             style={{
-                              width: 80,
-                              background: "var(--surface-2)",
-                              border: "1px solid var(--border)",
-                              borderRadius: 6,
-                              color: "var(--text)",
-                              fontSize: 13,
-                              padding: "5px 8px",
-                              outline: "none",
-                            }}
-                          />
-                        </td>
-                        <td
-                          style={{
-                            padding: "9px 8px",
-                            color: "var(--text-3)",
-                            fontSize: 11,
-                            fontWeight: 600,
-                          }}
-                        >
-                          {ing.unidade_padrao}
-                        </td>
-                        <td style={{ padding: "9px 8px" }}>
-                          <button
-                            type="button"
-                            onClick={() => handleAdicionar(ing)}
-                            disabled={!canAdd}
-                            style={{
-                              background: canAdd ? "var(--brand)" : "var(--surface-3)",
-                              color: canAdd ? "#fff" : "var(--text-3)",
-                              border: "none",
-                              borderRadius: 6,
-                              padding: "5px 12px",
-                              fontSize: 12,
+                              textAlign: col.align,
+                              fontSize: 11,
                               fontWeight: 700,
-                              cursor: canAdd ? "pointer" : "not-allowed",
-                              whiteSpace: "nowrap",
+                              color: "var(--text-3)",
+                              textTransform: "uppercase",
+                              letterSpacing: 0.8,
+                              padding: "6px 8px",
+                              borderBottom: "1px solid var(--border)",
+                              width: col.width,
                             }}
                           >
-                            + Adicionar
-                          </button>
-                        </td>
+                            {col.label}
+                          </th>
+                        ))}
                       </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+                    </thead>
+                    <tbody>
+                      {produtosFiltrados.map((ing) => {
+                        const minimoAtual = Number(
+                          estoques[ing.id]?.minimo ?? ing.estoque_minimo,
+                        );
+                        const realAtual = Number(
+                          estoques[ing.id]?.real ?? ing.estoque_real,
+                        );
+                        const critico = minimoAtual > 0 && realAtual <= minimoAtual;
+                        const qtdVal = qtds[ing.id] ?? "";
+                        const canAdd = Number(qtdVal) > 0;
+                        return (
+                          <tr
+                            key={ing.id}
+                            style={{
+                              borderLeft: critico
+                                ? "3px solid #EF4444"
+                                : "3px solid transparent",
+                            }}
+                          >
+                            {/* Nome */}
+                            <td style={{ padding: "9px 8px", color: "var(--text)" }}>
+                              {ing.nome}
+                              {critico && (
+                                <span
+                                  style={{
+                                    marginLeft: 8,
+                                    fontSize: 10,
+                                    color: "#EF4444",
+                                    fontWeight: 700,
+                                  }}
+                                >
+                                  ⚠ crítico
+                                </span>
+                              )}
+                            </td>
+
+                            {/* Estoque mínimo — editável */}
+                            <td style={{ padding: "9px 8px", textAlign: "center" }}>
+                              <input
+                                type="number"
+                                min="0"
+                                step="1"
+                                value={estoques[ing.id]?.minimo ?? ing.estoque_minimo}
+                                onChange={(e) =>
+                                  setEstoques((prev) => ({
+                                    ...prev,
+                                    [ing.id]: {
+                                      real:
+                                        prev[ing.id]?.real ??
+                                        String(ing.estoque_real),
+                                      minimo: e.target.value,
+                                    },
+                                  }))
+                                }
+                                onBlur={() => handleEstoqueBlur(ing)}
+                                style={{
+                                  width: 64,
+                                  background: "var(--surface-2)",
+                                  border: "1px solid var(--border)",
+                                  borderRadius: 6,
+                                  color: "var(--text-3)",
+                                  fontSize: 12,
+                                  padding: "4px 6px",
+                                  outline: "none",
+                                  textAlign: "center",
+                                }}
+                              />
+                            </td>
+
+                            {/* Estoque real — editável */}
+                            <td style={{ padding: "9px 8px", textAlign: "center" }}>
+                              <input
+                                type="number"
+                                min="0"
+                                step="1"
+                                value={estoques[ing.id]?.real ?? ing.estoque_real}
+                                onChange={(e) =>
+                                  setEstoques((prev) => ({
+                                    ...prev,
+                                    [ing.id]: {
+                                      minimo:
+                                        prev[ing.id]?.minimo ??
+                                        String(ing.estoque_minimo),
+                                      real: e.target.value,
+                                    },
+                                  }))
+                                }
+                                onBlur={() => handleEstoqueBlur(ing)}
+                                style={{
+                                  width: 64,
+                                  background: "var(--surface-2)",
+                                  border: "1px solid var(--border)",
+                                  borderRadius: 6,
+                                  color: critico ? "#EF4444" : "var(--text-2)",
+                                  fontSize: 12,
+                                  fontWeight: critico ? 700 : 400,
+                                  padding: "4px 6px",
+                                  outline: "none",
+                                  textAlign: "center",
+                                }}
+                              />
+                            </td>
+
+                            {/* Qtd */}
+                            <td style={{ padding: "9px 8px" }}>
+                              <input
+                                type="number"
+                                min="0.01"
+                                step="0.01"
+                                value={qtdVal}
+                                onChange={(e) =>
+                                  setQtds((prev) => ({
+                                    ...prev,
+                                    [ing.id]: e.target.value,
+                                  }))
+                                }
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") handleAdicionar(ing);
+                                }}
+                                style={{
+                                  width: 80,
+                                  background: "var(--surface-2)",
+                                  border: "1px solid var(--border)",
+                                  borderRadius: 6,
+                                  color: "var(--text)",
+                                  fontSize: 13,
+                                  padding: "5px 8px",
+                                  outline: "none",
+                                }}
+                              />
+                            </td>
+
+                            {/* Unidade — select g/un */}
+                            <td style={{ padding: "9px 8px" }}>
+                              <select
+                                value={getUnidade(ing)}
+                                onChange={(e) =>
+                                  handleUnidadeChange(ing, e.target.value)
+                                }
+                                style={{
+                                  width: "100%",
+                                  background: "var(--surface-2)",
+                                  border: "1px solid var(--border)",
+                                  borderRadius: 6,
+                                  color: "var(--text-3)",
+                                  fontSize: 11,
+                                  fontWeight: 600,
+                                  padding: "5px 4px",
+                                  outline: "none",
+                                }}
+                              >
+                                <option value="g">g</option>
+                                <option value="un">un</option>
+                              </select>
+                            </td>
+
+                            {/* Botão adicionar */}
+                            <td style={{ padding: "9px 8px" }}>
+                              <button
+                                type="button"
+                                onClick={() => handleAdicionar(ing)}
+                                disabled={!canAdd}
+                                style={{
+                                  background: canAdd
+                                    ? "var(--brand)"
+                                    : "var(--surface-3)",
+                                  color: canAdd ? "#fff" : "var(--text-3)",
+                                  border: "none",
+                                  borderRadius: 6,
+                                  padding: "5px 12px",
+                                  fontSize: 12,
+                                  fontWeight: 700,
+                                  cursor: canAdd ? "pointer" : "not-allowed",
+                                  whiteSpace: "nowrap",
+                                }}
+                              >
+                                + Adicionar
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
+              </>
             )}
 
             {/* Carrinho */}
-            <div
-              style={{ borderTop: "1px solid var(--border)", paddingTop: 20 }}
-            >
+            <div style={{ borderTop: "1px solid var(--border)", paddingTop: 20 }}>
               <div
                 style={{
                   fontSize: 11,
@@ -655,11 +813,7 @@ export function PedidosClient({ unit, ingredientes, pedidosIniciais }: Props) {
                           {p.purchase_order_items.map((item: PurchaseOrderItemRow) => (
                             <li
                               key={item.id}
-                              style={{
-                                fontSize: 12,
-                                color: "var(--text-2)",
-                                padding: "3px 0",
-                              }}
+                              style={{ fontSize: 12, color: "var(--text-2)", padding: "3px 0" }}
                             >
                               {item.nome} — {item.quantidade} {item.unidade ?? ""}
                             </li>

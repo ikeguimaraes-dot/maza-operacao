@@ -1,15 +1,33 @@
 "use client";
 
-import { Fragment, useState, useTransition } from "react";
+import { Fragment, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Trash2, ChevronDown, ChevronRight } from "lucide-react";
-import type { IngredienteCategoria } from "@kph/db/types/compras-ingredientes";
-import { CATEGORIA_LABELS, INGREDIENTE_CATEGORIAS } from "@kph/db/types/compras-ingredientes";
 import { formatDateBR } from "@/lib/format";
 import type { PurchaseOrderItemRow, PurchaseOrderStatus } from "@kph/db/types/database";
 import { criarPedido, atualizarEstoque } from "./actions";
 import type { IngredienteComEstoque, ItemPedido, PedidoComItens } from "./actions";
+
+const LABEL_MAP: Record<string, string> = {
+  proteina: "Proteína",
+  verdura: "Verdura",
+  legume: "Legume",
+  fruta: "Fruta",
+  graos: "Grãos e Cereais",
+  laticinios: "Laticínios",
+  panificacao: "Panificação",
+  bebida_alcoolica: "Bebidas Alcoólicas",
+  bebida_nao_alcoolica: "Bebidas Não Alcoólicas",
+  tempero: "Tempero",
+  oleo_gordura: "Óleo / Gordura",
+  descartavel: "Descartável",
+  limpeza: "Limpeza",
+  outro: "Outros",
+  hortifruti: "Hortifruti",
+  proteinas: "Proteínas",
+  secos: "Secos",
+};
 
 interface Props {
   unit: { id: string; name: string; brand_id: string | null };
@@ -47,12 +65,13 @@ export function PedidosClient({ unit, ingredientes, pedidosIniciais }: Props) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
 
-  const categoriasPresentes = INGREDIENTE_CATEGORIAS.filter((cat) =>
-    ingredientes.some((i) => i.categoria === cat),
+  const categorias = useMemo(
+    () => [...new Set(ingredientes.map((i) => i.categoria))].sort(),
+    [ingredientes],
   );
 
-  const [categoriaAtiva, setCategoriaAtiva] = useState<IngredienteCategoria | null>(
-    categoriasPresentes[0] ?? null,
+  const [categoriaAtiva, setCategoriaAtiva] = useState<string | null>(
+    categorias[0] ?? null,
   );
   const [busca, setBusca] = useState("");
   const [qtds, setQtds] = useState<Record<string, string>>({});
@@ -64,7 +83,7 @@ export function PedidosClient({ unit, ingredientes, pedidosIniciais }: Props) {
   const [observacoes, setObservacoes] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  function handleCategoriaChange(cat: IngredienteCategoria) {
+  function handleCategoriaChange(cat: string) {
     setCategoriaAtiva(cat);
     setBusca("");
   }
@@ -204,12 +223,12 @@ export function PedidosClient({ unit, ingredientes, pedidosIniciais }: Props) {
               padding: "12px 8px",
             }}
           >
-            {categoriasPresentes.length === 0 ? (
+            {categorias.length === 0 ? (
               <div style={{ padding: "12px 8px", color: "var(--text-3)", fontSize: 12 }}>
                 Nenhum produto disponível.
               </div>
             ) : (
-              categoriasPresentes.map((cat) => {
+              categorias.map((cat) => {
                 const isActive = cat === categoriaAtiva;
                 const criticos = ingredientes.filter((i) => {
                   const min = Number(estoques[i.id]?.minimo ?? i.estoque_minimo);
@@ -247,7 +266,7 @@ export function PedidosClient({ unit, ingredientes, pedidosIniciais }: Props) {
                         whiteSpace: "nowrap",
                       }}
                     >
-                      {CATEGORIA_LABELS[cat]}
+                      {LABEL_MAP[cat] ?? cat}
                     </span>
                     {criticos > 0 && (
                       <span
@@ -511,7 +530,10 @@ export function PedidosClient({ unit, ingredientes, pedidosIniciais }: Props) {
                                   outline: "none",
                                 }}
                               >
+                                <option value="kg">kg</option>
                                 <option value="g">g</option>
+                                <option value="l">l</option>
+                                <option value="ml">ml</option>
                                 <option value="un">un</option>
                               </select>
                             </td>

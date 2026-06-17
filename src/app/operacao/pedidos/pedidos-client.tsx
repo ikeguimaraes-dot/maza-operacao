@@ -264,6 +264,13 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
     setQtds((prev) => { const next = { ...prev }; delete next[nome]; return next; });
   }
 
+  function resetCarrinho() {
+    setQtds({});
+    setUnidades({});
+    setObservacoes("");
+    setCarrinhoAberto(false);
+  }
+
   function handleEnviar() {
     if (carrinho.length === 0) return;
     if (solicitanteNome.trim().length === 0) {
@@ -273,9 +280,11 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
     startTransition(async () => {
       const result = await criarPedido(carrinho, observacoes || null, solicitanteNome.trim());
       if (result.ok) {
-        setQtds({}); setObservacoes(""); setSolicitanteNome(""); setCarrinhoAberto(false);
+        resetCarrinho();
+        setSolicitanteNome("");
         setRascunhoId(null);
-        toast.success("Pedido enviado com sucesso!"); router.refresh();
+        toast.success("Pedido enviado com sucesso!");
+        router.refresh();
       } else { toast.error(result.error); }
     });
   }
@@ -286,7 +295,7 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
       const result = await salvarRascunhoPedido(carrinho, solicitanteNome, observacoes || null);
       if (result.ok) {
         setRascunhoId(result.data.pedidoId);
-        setQtds({}); setUnidades({}); setObservacoes("");
+        resetCarrinho();
         toast.success("Rascunho salvo");
       } else { toast.error(result.error); }
     });

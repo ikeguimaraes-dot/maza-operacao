@@ -286,6 +286,7 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
       const result = await salvarRascunhoPedido(carrinho, solicitanteNome, observacoes || null);
       if (result.ok) {
         setRascunhoId(result.data.pedidoId);
+        setQtds({}); setUnidades({}); setObservacoes("");
         toast.success("Rascunho salvo");
       } else { toast.error(result.error); }
     });

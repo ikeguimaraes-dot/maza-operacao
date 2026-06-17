@@ -149,3 +149,22 @@ export async function criarPedido(
   revalidatePath("/operacao/pedidos");
   return { ok: true, data: pedido };
 }
+
+export async function deletarPedido(pedidoId: string): Promise<ActionResult<void>> {
+  await requireUser();
+  const supabase = await createSupabaseServerClient();
+  if (!supabase) return { ok: false, error: "Supabase indisponível." };
+
+  const { error } = (await supabase
+    .from("purchase_orders" as never)
+    .delete()
+    .eq("id", pedidoId)) as unknown as { error: { message: string } | null };
+
+  if (error) {
+    console.error("[deletarPedido]", error.message);
+    return { ok: false, error: error.message };
+  }
+
+  revalidatePath("/operacao/pedidos");
+  return { ok: true, data: undefined };
+}

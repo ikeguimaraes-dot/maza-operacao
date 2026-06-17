@@ -212,8 +212,13 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
   const produtosPorNome = useMemo(() => new Map(produtos.map((p) => [p.nome, p])), [produtos]);
 
   const pedidosVisiveis = useMemo(
-    () => pedidosIniciais.filter((p) => !deletedIds.includes(p.id)),
-    [pedidosIniciais, deletedIds],
+    () => pedidosIniciais.filter((p) => {
+      if (deletedIds.includes(p.id)) return false;
+      if (p.status !== "rascunho") return true;
+      const nome = solicitanteNome.trim().toLowerCase();
+      return nome !== "" && p.solicitante_nome?.toLowerCase() === nome;
+    }),
+    [pedidosIniciais, deletedIds, solicitanteNome],
   );
 
   const pedidosEmAndamento = useMemo(
@@ -295,6 +300,22 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
         toast.success("Rascunho descartado");
       } else { toast.error(result.error); }
     });
+  }
+
+  function handleCarregarRascunho(p: PedidoComItens) {
+    const initQtds: Record<string, number> = {};
+    const initUnidades: Record<string, string> = {};
+    for (const item of p.purchase_order_items) {
+      initQtds[item.nome] = Number(item.quantidade);
+      initUnidades[item.nome] = item.unidade ?? "kg";
+    }
+    setQtds(initQtds);
+    setUnidades(initUnidades);
+    if (p.observacoes) setObservacoes(p.observacoes);
+    if (p.solicitante_nome) setSolicitanteNome(p.solicitante_nome);
+    setRascunhoId(p.id);
+    setAbaAtiva("pedidos");
+    toast("Rascunho carregado — continue seu pedido", { icon: "📝" });
   }
 
   // ── Handlers do histórico ──
@@ -900,6 +921,25 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
                 {pedidosVisiveis.map((p) => {
+                  if (p.status === "rascunho") {
+                    return (
+                      <div key={p.id} style={{ background: "var(--surface)", border: "1px solid #F59E0B", borderLeft: "3px solid #F59E0B", borderRadius: 10, padding: "12px 16px", display: "flex", alignItems: "center", gap: 12 }}>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                            <span style={{ fontSize: 11, fontWeight: 700, background: "#92400E", color: "#FDE68A", borderRadius: 99, padding: "2px 8px" }}>📝 Rascunho</span>
+                            {p.solicitante_nome && <span style={{ fontSize: 12, color: "#F59E0B", fontWeight: 600 }}>{p.solicitante_nome}</span>}
+                          </div>
+                          <div style={{ fontSize: 12, color: "var(--text-3)" }}>
+                            {p.purchase_order_items.length} {p.purchase_order_items.length === 1 ? "item" : "itens"} · {formatDateTime(p.data_pedido)}
+                          </div>
+                        </div>
+                        <button type="button" onClick={() => handleCarregarRascunho(p)}
+                          style={{ height: 36, padding: "0 12px", background: "#F59E0B", color: "#000", border: "none", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 }}>
+                          ✏️ Continuar
+                        </button>
+                      </div>
+                    );
+                  }
                   const isExpanded = expandedId === p.id;
                   const isConfirming = confirmingDelete === p.id;
                   const isDeleting = deletingId === p.id;

@@ -80,7 +80,6 @@ export async function getPedidosRecentes(unitId: string): Promise<PedidoComItens
     .from("purchase_orders" as never)
     .select("*, purchase_order_items(*)")
     .eq("unit_id", unitId)
-    .neq("status", "rascunho")
     .order("created_at", { ascending: false })
     .limit(15)) as unknown as {
     data: PedidoComItens[] | null;
@@ -116,12 +115,13 @@ export async function criarPedido(
   const supabase = await createSupabaseServerClient();
   if (!supabase) return { ok: false, error: "Erro ao conectar ao banco de dados." };
 
-  // Verifica se existe rascunho para aproveitar (promove em vez de criar novo)
+  // Verifica se existe rascunho deste solicitante para aproveitar (promove em vez de criar novo)
   const { data: rascunhoArr } = (await supabase
     .from("purchase_orders" as never)
     .select("id")
     .eq("unit_id", unit.id)
     .eq("status", "rascunho")
+    .ilike("solicitante_nome" as never, solicitanteNome)
     .order("created_at", { ascending: false })
     .limit(1)) as unknown as { data: Array<{ id: string }> | null; error: unknown };
 
@@ -243,13 +243,25 @@ export async function salvarRascunhoPedido(
   const supabase = await createSupabaseServerClient();
   if (!supabase) return { ok: false, error: "Supabase indisponível." };
 
-  const { data: existingArr } = (await supabase
-    .from("purchase_orders" as never)
-    .select("id")
-    .eq("unit_id", unit.id)
-    .eq("status", "rascunho")
-    .order("created_at", { ascending: false })
-    .limit(1)) as unknown as { data: Array<{ id: string }> | null; error: unknown };
+  const nameFilter = solicitanteNome.trim();
+  type ExistArr = { data: Array<{ id: string }> | null; error: unknown };
+  const { data: existingArr } = nameFilter
+    ? (await supabase
+        .from("purchase_orders" as never)
+        .select("id")
+        .eq("unit_id", unit.id)
+        .eq("status", "rascunho")
+        .ilike("solicitante_nome" as never, nameFilter)
+        .order("created_at", { ascending: false })
+        .limit(1)) as unknown as ExistArr
+    : (await supabase
+        .from("purchase_orders" as never)
+        .select("id")
+        .eq("unit_id", unit.id)
+        .eq("status", "rascunho")
+        .is("solicitante_nome" as never, null)
+        .order("created_at", { ascending: false })
+        .limit(1)) as unknown as ExistArr;
 
   const existingId = existingArr?.[0]?.id ?? null;
   let pedidoId: string;

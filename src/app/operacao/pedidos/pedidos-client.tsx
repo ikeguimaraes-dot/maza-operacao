@@ -1,16 +1,23 @@
 "use client";
 
-import { Fragment, useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { ShoppingBag, X, ChevronDown, ChevronRight, ArrowLeft } from "lucide-react";
 import type { PurchaseOrderItemRow, PurchaseOrderStatus } from "@kph/db/types/database";
-import { criarPedido, deletarPedido, salvarRascunhoRecebimento, finalizarRecebimento } from "./actions";
+import {
+  criarPedido,
+  deletarPedido,
+  salvarRascunhoRecebimento,
+  finalizarRecebimento,
+  salvarRascunhoPedido,
+} from "./actions";
 import type {
   ProdutoCatalogo,
   PedidoComItens,
   PedidoParaRecebimento,
   RecebimentoItemInput,
+  RascunhoPedido,
 } from "./actions";
 
 // ── Constantes e helpers ─────────────────────────────────────────────────────
@@ -115,6 +122,7 @@ interface Props {
   produtos: ProdutoCatalogo[];
   pedidosIniciais: PedidoComItens[];
   pedidosParaRecebimento: PedidoParaRecebimento[];
+  rascunhoInicial: RascunhoPedido | null;
 }
 
 // ── StatusBadge ──────────────────────────────────────────────────────────────
@@ -137,14 +145,15 @@ function StatusBadge({ status }: { status: PurchaseOrderStatus }) {
 
 // ── Componente principal ─────────────────────────────────────────────────────
 
-export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRecebimento }: Props) {
+export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRecebimento, rascunhoInicial }: Props) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [isRecebendoPending, startRecebendoTransition] = useTransition();
   const [isSalvandoPending, startSalvandoTransition] = useTransition();
+  const [isSalvandoPedido, startSalvandoPedidoTransition] = useTransition();
 
   // ── Abas ──
-  const [abaAtiva, setAbaAtiva] = useState<"pedidos" | "recebimento">("pedidos");
+  const [abaAtiva, setAbaAtiva] = useState<"pedidos" | "recebimento" | "historico">("pedidos");
 
   // ── Estado do formulário de pedidos ──
   const categorias = useMemo(() => [...new Set(produtos.map((p) => p.categoria))].sort(), [produtos]);
@@ -155,6 +164,7 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
   const [observacoes, setObservacoes] = useState("");
   const [carrinhoAberto, setCarrinhoAberto] = useState(false);
   const [solicitanteNome, setSolicitanteNome] = useState("");
+  const [rascunhoId, setRascunhoId] = useState<string | null>(rascunhoInicial?.id ?? null);
 
   // ── Estado do histórico ──
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -173,6 +183,23 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
   const [isFinalizarModalAberto, setIsFinalizarModalAberto] = useState(false);
   const [isRascunhoModalAberto, setIsRascunhoModalAberto] = useState(false);
   const [assinaturaNome, setAssinaturaNome] = useState("");
+
+  // ── Carrega rascunho de pedido ao montar ──
+  useEffect(() => {
+    if (!rascunhoInicial || rascunhoInicial.itens.length === 0) return;
+    const initQtds: Record<string, number> = {};
+    const initUnidades: Record<string, string> = {};
+    for (const item of rascunhoInicial.itens) {
+      initQtds[item.nome] = item.quantidade;
+      initUnidades[item.nome] = item.unidade;
+    }
+    setQtds(initQtds);
+    setUnidades(initUnidades);
+    if (rascunhoInicial.observacoes) setObservacoes(rascunhoInicial.observacoes);
+    if (rascunhoInicial.solicitante_nome) setSolicitanteNome(rascunhoInicial.solicitante_nome);
+    toast("Rascunho carregado — continue de onde parou", { icon: "📋" });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ── Dados derivados ──
   const carrinho = useMemo(
@@ -231,7 +258,9 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
   function handleRemoverItem(nome: string) {
     setQtds((prev) => { const next = { ...prev }; delete next[nome]; return next; });
   }
+
   function handleEnviar() {
+    if (carrinho.length === 0) return;
     if (solicitanteNome.trim().length === 0) {
       toast.error("Informe seu nome antes de enviar");
       return;
@@ -240,7 +269,30 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
       const result = await criarPedido(carrinho, observacoes || null, solicitanteNome.trim());
       if (result.ok) {
         setQtds({}); setObservacoes(""); setSolicitanteNome(""); setCarrinhoAberto(false);
+        setRascunhoId(null);
         toast.success("Pedido enviado com sucesso!"); router.refresh();
+      } else { toast.error(result.error); }
+    });
+  }
+
+  function handleSalvarRascunhoPedido() {
+    if (carrinho.length === 0) return;
+    startSalvandoPedidoTransition(async () => {
+      const result = await salvarRascunhoPedido(carrinho, solicitanteNome, observacoes || null);
+      if (result.ok) {
+        setRascunhoId(result.data.pedidoId);
+        toast.success("Rascunho salvo");
+      } else { toast.error(result.error); }
+    });
+  }
+
+  function handleDescartarRascunho() {
+    if (!rascunhoId) return;
+    startTransition(async () => {
+      const result = await deletarPedido(rascunhoId);
+      if (result.ok) {
+        setRascunhoId(null);
+        toast.success("Rascunho descartado");
       } else { toast.error(result.error); }
     });
   }
@@ -281,10 +333,9 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
     setIsRascunhoModalAberto(false);
     setAssinaturaNome("");
 
-    if (p.recebimento?.status === "finalizado") return; // modo leitura
+    if (p.recebimento?.status === "finalizado") return;
 
     if (p.recebimento?.status === "rascunho") {
-      // Carrega quantidades salvas no rascunho
       const initQtds: Record<string, number> = {};
       const initObs: Record<string, string> = {};
       for (const ri of p.recebimento.recebimento_itens) {
@@ -295,7 +346,6 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
       setObsItens(initObs);
       setObsGeralRecebimento(p.recebimento.observacao ?? "");
     } else {
-      // Novo recebimento: inicializa com quantidade pedida
       const initQtds: Record<string, number> = {};
       p.purchase_order_items.forEach((item) => { initQtds[item.id] = Number(item.quantidade); });
       setQtdsRecebidas(initQtds);
@@ -373,7 +423,6 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
     const pendentes = itens.filter((i) => i.status !== "ok");
     const isIntegral = pendentes.length === 0;
 
-    // Agrupa por categoria
     const groups = new Map<string, typeof itens>();
     for (const ri of itens) {
       const cat = produtosPorNome.get(ri.nome)?.categoria ?? "";
@@ -434,414 +483,491 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
   // ── JSX ─────────────────────────────────────────────────────────────────────
 
   return (
-    <div>
-      {/* ══ WRAPPER 100DVH ══════════════════════════════════════════════════ */}
-      <div style={{ height: "100dvh", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+    <div style={{ height: "100dvh", display: "flex", flexDirection: "column", overflow: "hidden" }}>
 
-        {/* ABAS */}
-        <nav style={{ flexShrink: 0, display: "flex", borderBottom: "1px solid var(--border)", background: "var(--surface)" }}>
-          {(["pedidos", "recebimento"] as const).map((aba) => (
-            <button key={aba} type="button" onClick={() => setAbaAtiva(aba)}
-              style={{ flex: 1, height: 48, border: "none", borderBottom: abaAtiva === aba ? "2px solid var(--brand)" : "2px solid transparent", background: "none", color: abaAtiva === aba ? "var(--text)" : "var(--text-3)", fontWeight: abaAtiva === aba ? 700 : 500, fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-              {aba === "pedidos" ? "📋 Pedidos" : "📦 Recebimento"}
-            </button>
-          ))}
-        </nav>
+      {/* ABAS */}
+      <nav style={{ flexShrink: 0, display: "flex", borderBottom: "1px solid var(--border)", background: "var(--surface)" }}>
+        {(["pedidos", "recebimento", "historico"] as const).map((aba) => (
+          <button key={aba} type="button" onClick={() => setAbaAtiva(aba)}
+            style={{ flex: 1, height: 48, border: "none", borderBottom: abaAtiva === aba ? "2px solid var(--brand)" : "2px solid transparent", background: "none", color: abaAtiva === aba ? "var(--text)" : "var(--text-3)", fontWeight: abaAtiva === aba ? 700 : 500, fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}>
+            {aba === "pedidos" ? "📋 Novo Pedido" : aba === "recebimento" ? "📦 Recebimento" : "🕓 Histórico"}
+          </button>
+        ))}
+      </nav>
 
-        {/* CONTEÚDO DAS ABAS */}
-        <div style={{ flex: 1, overflow: "hidden" }}>
+      {/* CONTEÚDO DAS ABAS */}
+      <div style={{ flex: 1, overflow: "hidden" }}>
 
-          {/* ── ABA PEDIDOS ──────────────────────────────────────────────── */}
-          {abaAtiva === "pedidos" && (
-            <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
-              <header style={{ height: 64, flexShrink: 0, display: "flex", alignItems: "center", gap: 12, padding: "0 16px", borderBottom: "1px solid var(--border)", background: "var(--surface)" }}>
-                <input type="search" placeholder="Buscar produto…" value={busca} onChange={(e) => setBusca(e.target.value)}
-                  style={{ flex: 1, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 10, color: "var(--text)", fontSize: 15, padding: "10px 14px", outline: "none" }} />
-                <button type="button" onClick={() => setCarrinhoAberto(true)}
-                  style={{ display: "flex", alignItems: "center", gap: 8, height: 44, background: totalItens > 0 ? "var(--brand)" : "var(--surface-2)", color: totalItens > 0 ? "#fff" : "var(--text-2)", border: "1px solid var(--border)", borderRadius: 10, padding: "0 16px", fontSize: 14, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 }}>
-                  <ShoppingBag size={18} />
-                  {totalItens > 0 ? `Carrinho (${totalItens})` : "Carrinho"}
+        {/* ── ABA PEDIDOS ──────────────────────────────────────────────── */}
+        {abaAtiva === "pedidos" && (
+          <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+            <header style={{ height: 64, flexShrink: 0, display: "flex", alignItems: "center", gap: 10, padding: "0 16px", borderBottom: "1px solid var(--border)", background: "var(--surface)" }}>
+              <input type="search" placeholder="Buscar produto…" value={busca} onChange={(e) => setBusca(e.target.value)}
+                style={{ flex: 1, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 10, color: "var(--text)", fontSize: 15, padding: "10px 14px", outline: "none" }} />
+              {totalItens > 0 && (
+                <button type="button" onClick={handleSalvarRascunhoPedido} disabled={isSalvandoPedido}
+                  style={{ height: 36, padding: "0 12px", background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text-3)", fontSize: 12, fontWeight: 600, cursor: isSalvandoPedido ? "not-allowed" : "pointer", whiteSpace: "nowrap", flexShrink: 0, opacity: isSalvandoPedido ? 0.5 : 1 }}>
+                  {isSalvandoPedido ? "Salvando…" : "💾 Rascunho"}
                 </button>
-              </header>
+              )}
+              <button type="button" onClick={() => setCarrinhoAberto(true)}
+                style={{ display: "flex", alignItems: "center", gap: 8, height: 44, background: totalItens > 0 ? "var(--brand)" : "var(--surface-2)", color: totalItens > 0 ? "#fff" : "var(--text-2)", border: "1px solid var(--border)", borderRadius: 10, padding: "0 16px", fontSize: 14, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 }}>
+                <ShoppingBag size={18} />
+                {totalItens > 0 ? `Carrinho (${totalItens})` : "Carrinho"}
+              </button>
+            </header>
 
-              <div style={{ flex: 1, overflow: "hidden", display: "flex" }}>
-                {/* Categorias */}
-                <nav style={{ width: 160, flexShrink: 0, overflowY: "auto", borderRight: "1px solid var(--border)", background: "var(--surface)", padding: "8px 6px" }}>
-                  {categorias.length === 0 ? (
-                    <div style={{ padding: 12, color: "var(--text-3)", fontSize: 12, textAlign: "center" }}>Nenhum produto.</div>
-                  ) : categorias.map((cat) => {
-                    const isActive = cat === categoriaAtiva;
-                    return (
-                      <button key={cat} type="button" onClick={() => handleCategoriaChange(cat)}
-                        style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4, width: "100%", minHeight: 72, padding: "10px 8px", marginBottom: 4, background: isActive ? "var(--brand)" : "var(--surface-2)", border: "none", borderRadius: 10, color: isActive ? "#fff" : "var(--text-2)", cursor: "pointer", textAlign: "center" }}>
-                        <span style={{ fontSize: 28, lineHeight: 1 }}>{getCatEmoji(cat)}</span>
-                        <span style={{ fontSize: 11, fontWeight: 600, lineHeight: 1.3, whiteSpace: "normal", wordBreak: "break-word" }}>{LABEL_MAP[cat] ?? cat}</span>
+            <div style={{ flex: 1, overflow: "hidden", display: "flex" }}>
+              {/* Categorias */}
+              <nav style={{ width: 160, flexShrink: 0, overflowY: "auto", borderRight: "1px solid var(--border)", background: "var(--surface)", padding: "8px 6px" }}>
+                {categorias.length === 0 ? (
+                  <div style={{ padding: 12, color: "var(--text-3)", fontSize: 12, textAlign: "center" }}>Nenhum produto.</div>
+                ) : categorias.map((cat) => {
+                  const isActive = cat === categoriaAtiva;
+                  return (
+                    <button key={cat} type="button" onClick={() => handleCategoriaChange(cat)}
+                      style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4, width: "100%", minHeight: 72, padding: "10px 8px", marginBottom: 4, background: isActive ? "var(--brand)" : "var(--surface-2)", border: "none", borderRadius: 10, color: isActive ? "#fff" : "var(--text-2)", cursor: "pointer", textAlign: "center" }}>
+                      <span style={{ fontSize: 28, lineHeight: 1 }}>{getCatEmoji(cat)}</span>
+                      <span style={{ fontSize: 11, fontWeight: 600, lineHeight: 1.3, whiteSpace: "normal", wordBreak: "break-word" }}>{LABEL_MAP[cat] ?? cat}</span>
+                    </button>
+                  );
+                })}
+              </nav>
+
+              {/* Produtos */}
+              <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px" }}>
+                {!categoriaAtiva && busca.trim() === "" ? (
+                  <div style={{ color: "var(--text-3)", fontSize: 14, textAlign: "center", paddingTop: 48 }}>Selecione uma categoria.</div>
+                ) : produtosFiltrados.length === 0 ? (
+                  <div style={{ color: "var(--text-3)", fontSize: 14, textAlign: "center", paddingTop: 48 }}>Nenhum produto encontrado.</div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {produtosFiltrados.map((prod) => {
+                      const qty = qtds[prod.nome] ?? 0;
+                      const inCart = qty > 0;
+                      return (
+                        <div key={prod.nome} style={{ minHeight: 72, padding: "14px 16px", background: "var(--surface)", border: inCart ? "1px solid var(--brand)" : "1px solid var(--border)", borderLeft: inCart ? "3px solid var(--brand)" : "1px solid var(--border)", borderRadius: 10, display: "flex", alignItems: "center", gap: 16 }}>
+                          <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 2 }}>
+                            <span style={{ fontSize: 15, fontWeight: 600, color: "var(--text)", lineHeight: 1.3 }}>{prod.nome}</span>
+                            {busca.trim() !== "" && (
+                              <span style={{ fontSize: 11, color: "var(--text-3)" }}>{LABEL_MAP[prod.categoria] ?? prod.categoria}</span>
+                            )}
+                          </div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                            <button type="button" onClick={() => handleDecrement(prod)} disabled={qty <= 0}
+                              style={{ width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid var(--border)", borderRadius: 8, background: "var(--surface-2)", color: "var(--text)", fontSize: 20, fontWeight: 700, flexShrink: 0, cursor: qty <= 0 ? "not-allowed" : "pointer", opacity: qty <= 0 ? 0.3 : 1 }}>−</button>
+                            <input type="number" inputMode="decimal" min="0" step="any" value={qty === 0 ? "" : qty} placeholder="0"
+                              onChange={(e) => handleQtdChange(prod.nome, e.target.value)}
+                              style={{ width: 52, height: 44, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", fontSize: 16, fontWeight: 700, textAlign: "center", outline: "none", padding: "0 4px" }} />
+                            <button type="button" onClick={() => handleIncrement(prod)}
+                              style={{ width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid var(--border)", borderRadius: 8, background: "var(--surface-2)", color: "var(--text)", fontSize: 20, fontWeight: 700, cursor: "pointer", flexShrink: 0 }}>+</button>
+                            <select value={getUnidade(prod)} onChange={(e) => handleUnidadeChange(prod, e.target.value)}
+                              style={{ height: 44, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text-3)", fontSize: 13, fontWeight: 600, padding: "0 6px", outline: "none", flexShrink: 0 }}>
+                              <option value="kg">kg</option><option value="g">g</option>
+                              <option value="l">l</option><option value="ml">ml</option><option value="un">un</option>
+                            </select>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <footer style={{ height: 72, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, padding: "0 16px", borderTop: "1px solid var(--border)", background: "var(--surface)" }}>
+              <span style={{ fontSize: 13, color: totalItens > 0 ? "var(--text-2)" : "var(--text-3)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{footerResumo}</span>
+              <button type="button" onClick={() => setCarrinhoAberto(true)} disabled={totalItens === 0}
+                style={{ height: 48, minWidth: 160, background: "#22C55E", color: "#fff", border: "none", borderRadius: 10, padding: "0 24px", fontSize: 15, fontWeight: 700, cursor: totalItens === 0 ? "not-allowed" : "pointer", opacity: totalItens === 0 ? 0.4 : 1, flexShrink: 0, whiteSpace: "nowrap" }}>
+                Revisar e Enviar
+              </button>
+            </footer>
+          </div>
+        )}
+
+        {/* ── ABA RECEBIMENTO ──────────────────────────────────────────── */}
+        {abaAtiva === "recebimento" && (
+          <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+
+            {pedidoConferencia ? (() => {
+              const rec = pedidoConferencia.recebimento;
+              const isFinalizado = rec?.status === "finalizado";
+              const isRascunho = rec?.status === "rascunho";
+              const isEditMode = !isFinalizado;
+
+              return (
+                <>
+                  {/* Header conferência */}
+                  <header style={{ flexShrink: 0, display: "flex", alignItems: "flex-start", gap: 12, padding: "12px 16px", borderBottom: "1px solid var(--border)", background: "var(--surface)", minHeight: 64 }}>
+                    <button type="button" onClick={handleVoltarRecebimento}
+                      style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text-2)", padding: "8px 12px", fontSize: 13, fontWeight: 600, cursor: "pointer", flexShrink: 0, marginTop: 2 }}>
+                      <ArrowLeft size={15} /> Voltar
+                    </button>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text)" }}>
+                        {isFinalizado
+                          ? `Finalizado em ${formatDateTime(rec?.created_at)}`
+                          : `Recebendo: ${formatDateTime(pedidoConferencia.data_pedido)}`}
+                      </div>
+                      <div style={{ fontSize: 11, color: "var(--text-3)", marginTop: 2 }}>
+                        {isFinalizado
+                          ? `Recebido por: ${rec?.assinatura_nome ?? "—"}`
+                          : `${pedidoConferencia.purchase_order_items.length} itens · ${unit.name}`}
+                      </div>
+                      {isRascunho && (
+                        <div style={{ fontSize: 11, color: "#F59E0B", marginTop: 3, fontWeight: 600 }}>
+                          🟠 Rascunho salvo em {rascunhoSalvoEm ?? formatDateTime(rec?.created_at)}
+                        </div>
+                      )}
+                      {!isRascunho && rascunhoSalvoEm && (
+                        <div style={{ fontSize: 11, color: "#F59E0B", marginTop: 3, fontWeight: 600 }}>
+                          🟠 Rascunho salvo às {rascunhoSalvoEm}
+                        </div>
+                      )}
+                    </div>
+                    {(isFinalizado || isRascunho) && (
+                      <button type="button" onClick={() => handlePdfRecebimento(pedidoConferencia)}
+                        style={{ display: "flex", alignItems: "center", gap: 6, height: 36, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text-2)", padding: "0 12px", fontSize: 12, fontWeight: 600, cursor: "pointer", flexShrink: 0 }}>
+                        📄 Relatório PDF
                       </button>
-                    );
-                  })}
-                </nav>
+                    )}
+                  </header>
 
-                {/* Produtos */}
-                <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px" }}>
-                  {!categoriaAtiva && busca.trim() === "" ? (
-                    <div style={{ color: "var(--text-3)", fontSize: 14, textAlign: "center", paddingTop: 48 }}>Selecione uma categoria.</div>
-                  ) : produtosFiltrados.length === 0 ? (
-                    <div style={{ color: "var(--text-3)", fontSize: 14, textAlign: "center", paddingTop: 48 }}>Nenhum produto encontrado.</div>
-                  ) : (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                      {produtosFiltrados.map((prod) => {
-                        const qty = qtds[prod.nome] ?? 0;
-                        const inCart = qty > 0;
-                        return (
-                          <div key={prod.nome} style={{ minHeight: 72, padding: "14px 16px", background: "var(--surface)", border: inCart ? "1px solid var(--brand)" : "1px solid var(--border)", borderLeft: inCart ? "3px solid var(--brand)" : "1px solid var(--border)", borderRadius: 10, display: "flex", alignItems: "center", gap: 16 }}>
-                            <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 2 }}>
-                              <span style={{ fontSize: 15, fontWeight: 600, color: "var(--text)", lineHeight: 1.3 }}>{prod.nome}</span>
-                              {busca.trim() !== "" && (
-                                <span style={{ fontSize: 11, color: "var(--text-3)" }}>{LABEL_MAP[prod.categoria] ?? prod.categoria}</span>
+                  {/* Corpo */}
+                  <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px" }}>
+                    {isFinalizado && rec ? (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                        {rec.recebimento_itens.map((ri) => {
+                          const conf = STATUS_CONF[ri.status as keyof typeof STATUS_CONF] ?? STATUS_CONF.ok;
+                          return (
+                            <div key={ri.id} style={{ padding: "14px 16px", background: "var(--surface)", border: "1px solid var(--border)", borderLeft: `3px solid ${conf.border}`, borderRadius: 10 }}>
+                              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+                                <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>{ri.nome}</span>
+                                <span style={{ fontSize: 12, color: "var(--text-3)" }}>{conf.emoji} {conf.label}</span>
+                              </div>
+                              <div style={{ fontSize: 12, color: "var(--text-3)" }}>
+                                Pedido: {ri.quantidade_pedida} {ri.unidade ?? ""} · Recebido: {ri.quantidade_recebida} {ri.unidade ?? ""}
+                              </div>
+                              {ri.observacao && (
+                                <div style={{ fontSize: 11, color: "var(--text-3)", fontStyle: "italic", marginTop: 4 }}>{ri.observacao}</div>
                               )}
                             </div>
-                            <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-                              <button type="button" onClick={() => handleDecrement(prod)} disabled={qty <= 0}
-                                style={{ width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid var(--border)", borderRadius: 8, background: "var(--surface-2)", color: "var(--text)", fontSize: 20, fontWeight: 700, flexShrink: 0, cursor: qty <= 0 ? "not-allowed" : "pointer", opacity: qty <= 0 ? 0.3 : 1 }}>−</button>
-                              <input type="number" inputMode="decimal" min="0" step="any" value={qty === 0 ? "" : qty} placeholder="0"
-                                onChange={(e) => handleQtdChange(prod.nome, e.target.value)}
-                                style={{ width: 52, height: 44, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", fontSize: 16, fontWeight: 700, textAlign: "center", outline: "none", padding: "0 4px" }} />
-                              <button type="button" onClick={() => handleIncrement(prod)}
-                                style={{ width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid var(--border)", borderRadius: 8, background: "var(--surface-2)", color: "var(--text)", fontSize: 20, fontWeight: 700, cursor: "pointer", flexShrink: 0 }}>+</button>
-                              <select value={getUnidade(prod)} onChange={(e) => handleUnidadeChange(prod, e.target.value)}
-                                style={{ height: 44, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text-3)", fontSize: 13, fontWeight: 600, padding: "0 6px", outline: "none", flexShrink: 0 }}>
-                                <option value="kg">kg</option><option value="g">g</option>
-                                <option value="l">l</option><option value="ml">ml</option><option value="un">un</option>
-                              </select>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <footer style={{ height: 72, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, padding: "0 16px", borderTop: "1px solid var(--border)", background: "var(--surface)" }}>
-                <span style={{ fontSize: 13, color: totalItens > 0 ? "var(--text-2)" : "var(--text-3)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{footerResumo}</span>
-                <button type="button" onClick={handleEnviar} disabled={totalItens === 0 || isPending}
-                  style={{ height: 48, minWidth: 160, background: "#22C55E", color: "#fff", border: "none", borderRadius: 10, padding: "0 24px", fontSize: 15, fontWeight: 700, cursor: totalItens === 0 || isPending ? "not-allowed" : "pointer", opacity: totalItens === 0 || isPending ? 0.4 : 1, flexShrink: 0, whiteSpace: "nowrap" }}>
-                  {isPending ? "Enviando…" : "Enviar Pedido"}
-                </button>
-              </footer>
-            </div>
-          )}
-
-          {/* ── ABA RECEBIMENTO ──────────────────────────────────────────── */}
-          {abaAtiva === "recebimento" && (
-            <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
-
-              {pedidoConferencia ? (() => {
-                const rec = pedidoConferencia.recebimento;
-                const isFinalizado = rec?.status === "finalizado";
-                const isRascunho = rec?.status === "rascunho";
-                const isEditMode = !isFinalizado;
-
-                return (
-                  <>
-                    {/* Header conferência */}
-                    <header style={{ flexShrink: 0, display: "flex", alignItems: "flex-start", gap: 12, padding: "12px 16px", borderBottom: "1px solid var(--border)", background: "var(--surface)", minHeight: 64 }}>
-                      <button type="button" onClick={handleVoltarRecebimento}
-                        style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text-2)", padding: "8px 12px", fontSize: 13, fontWeight: 600, cursor: "pointer", flexShrink: 0, marginTop: 2 }}>
-                        <ArrowLeft size={15} /> Voltar
-                      </button>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text)" }}>
-                          {isFinalizado
-                            ? `Finalizado em ${formatDateTime(rec?.created_at)}`
-                            : `Recebendo: ${formatDateTime(pedidoConferencia.data_pedido)}`}
-                        </div>
-                        <div style={{ fontSize: 11, color: "var(--text-3)", marginTop: 2 }}>
-                          {isFinalizado
-                            ? `Recebido por: ${rec?.assinatura_nome ?? "—"}`
-                            : `${pedidoConferencia.purchase_order_items.length} itens · ${unit.name}`}
-                        </div>
-                        {isRascunho && (
-                          <div style={{ fontSize: 11, color: "#F59E0B", marginTop: 3, fontWeight: 600 }}>
-                            🟠 Rascunho salvo em {rascunhoSalvoEm ?? formatDateTime(rec?.created_at)}
-                          </div>
-                        )}
-                        {!isRascunho && rascunhoSalvoEm && (
-                          <div style={{ fontSize: 11, color: "#F59E0B", marginTop: 3, fontWeight: 600 }}>
-                            🟠 Rascunho salvo às {rascunhoSalvoEm}
+                          );
+                        })}
+                        {rec.observacao && (
+                          <div style={{ marginTop: 8, background: "var(--surface-2)", border: "1px solid var(--border)", borderLeft: "3px solid var(--text-3)", borderRadius: 6, padding: "10px 12px", fontSize: 13, color: "var(--text-3)", fontStyle: "italic" }}>
+                            Obs geral: {rec.observacao}
                           </div>
                         )}
                       </div>
-                      {(isFinalizado || isRascunho) && (
-                        <button type="button" onClick={() => handlePdfRecebimento(pedidoConferencia)}
-                          style={{ display: "flex", alignItems: "center", gap: 6, height: 36, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text-2)", padding: "0 12px", fontSize: 12, fontWeight: 600, cursor: "pointer", flexShrink: 0 }}>
-                          📄 Relatório PDF
-                        </button>
-                      )}
-                    </header>
+                    ) : (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                        {Array.from(groupItemsByCategoria(pedidoConferencia.purchase_order_items, produtosPorNome)).map(([cat, items]) => (
+                          <div key={cat}>
+                            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: 0.7, paddingBottom: 6, marginBottom: 8, borderBottom: "1px solid var(--border)" }}>
+                              {cat} ({items.length})
+                            </div>
+                            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                              {items.map((item: PurchaseOrderItemRow) => {
+                                const qtdPedida = Number(item.quantidade);
+                                const qtdRec = qtdsRecebidas[item.id] ?? qtdPedida;
+                                const status = getItemStatus(item.id, qtdPedida);
+                                const conf = STATUS_CONF[status];
+                                const catProd = produtosPorNome.get(item.nome)?.categoria ?? "";
+                                return (
+                                  <div key={item.id} style={{ padding: "14px 16px", background: "var(--surface)", border: "1px solid var(--border)", borderLeft: `3px solid ${conf.border}`, borderRadius: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+                                    <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
+                                      <div>
+                                        <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text)", textTransform: "uppercase", letterSpacing: 0.2 }}>{item.nome}</div>
+                                        <div style={{ fontSize: 11, color: "var(--text-3)", marginTop: 2 }}>{LABEL_MAP[catProd] ?? catProd}</div>
+                                        <div style={{ fontSize: 12, color: "var(--text-3)", marginTop: 4 }}>Pedido: {qtdPedida} {item.unidade ?? ""}</div>
+                                      </div>
+                                      <span style={{ fontSize: 12, color: "var(--text-2)", flexShrink: 0 }}>{conf.emoji} {conf.label}</span>
+                                    </div>
+                                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                      <span style={{ fontSize: 12, color: "var(--text-3)", flexShrink: 0 }}>Recebido:</span>
+                                      <button type="button"
+                                        onClick={() => setQtdsRecebidas((p) => ({ ...p, [item.id]: Math.max(0, (p[item.id] ?? qtdPedida) - 1) }))}
+                                        disabled={qtdRec <= 0}
+                                        style={{ width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid var(--border)", borderRadius: 8, background: "var(--surface-2)", color: "var(--text)", fontSize: 20, fontWeight: 700, cursor: qtdRec <= 0 ? "not-allowed" : "pointer", opacity: qtdRec <= 0 ? 0.3 : 1 }}>−</button>
+                                      <input type="number" inputMode="decimal" min="0" step="any" value={qtdRec === 0 ? "" : qtdRec} placeholder="0"
+                                        onChange={(e) => { const n = parseFloat(e.target.value); setQtdsRecebidas((p) => ({ ...p, [item.id]: isNaN(n) || n < 0 ? 0 : n })); }}
+                                        style={{ width: 60, height: 44, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", fontSize: 16, fontWeight: 700, textAlign: "center", outline: "none", padding: "0 4px" }} />
+                                      <button type="button"
+                                        onClick={() => setQtdsRecebidas((p) => ({ ...p, [item.id]: (p[item.id] ?? qtdPedida) + 1 }))}
+                                        style={{ width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid var(--border)", borderRadius: 8, background: "var(--surface-2)", color: "var(--text)", fontSize: 20, fontWeight: 700, cursor: "pointer" }}>+</button>
+                                      <span style={{ fontSize: 12, color: "var(--text-3)" }}>{item.unidade ?? ""}</span>
+                                    </div>
+                                    <input type="text" placeholder="Obs: ex: chegou amassado…"
+                                      value={obsItens[item.id] ?? ""}
+                                      onChange={(e) => setObsItens((p) => ({ ...p, [item.id]: e.target.value }))}
+                                      style={{ background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text)", fontSize: 12, padding: "7px 10px", outline: "none", width: "100%" }} />
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ))}
+                        <div style={{ marginTop: 4 }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: 0.7, marginBottom: 6 }}>Observação geral</div>
+                          <textarea rows={2} placeholder="Observações do recebimento (opcional)…"
+                            value={obsGeralRecebimento}
+                            onChange={(e) => setObsGeralRecebimento(e.target.value)}
+                            style={{ width: "100%", background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", fontSize: 13, padding: "10px 12px", outline: "none", resize: "vertical", boxSizing: "border-box" }} />
+                        </div>
+                      </div>
+                    )}
+                  </div>
 
-                    {/* Corpo */}
-                    <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px" }}>
-                      {isFinalizado && rec ? (
-                        // ── Modo somente leitura ──
-                        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                          {rec.recebimento_itens.map((ri) => {
-                            const conf = STATUS_CONF[ri.status as keyof typeof STATUS_CONF] ?? STATUS_CONF.ok;
-                            return (
-                              <div key={ri.id} style={{ padding: "14px 16px", background: "var(--surface)", border: "1px solid var(--border)", borderLeft: `3px solid ${conf.border}`, borderRadius: 10 }}>
-                                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
-                                  <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>{ri.nome}</span>
-                                  <span style={{ fontSize: 12, color: "var(--text-3)" }}>{conf.emoji} {conf.label}</span>
+                  {/* Footer + modais inline — só em modo edição */}
+                  {isEditMode && conferenceSummary && (
+                    <>
+                      {/* Modal inline: salvar rascunho */}
+                      {isRascunhoModalAberto && (
+                        <div style={{ flexShrink: 0, padding: "14px 16px", borderTop: "1px solid var(--border)", background: "var(--surface-2)" }}>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-2)", marginBottom: 8 }}>Nome de quem está recebendo *</div>
+                          <input
+                            type="text"
+                            placeholder="Digite seu nome completo"
+                            value={assinaturaNome}
+                            onChange={(e) => setAssinaturaNome(e.target.value)}
+                            autoFocus
+                            style={{ width: "100%", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", fontSize: 14, padding: "10px 12px", outline: "none", marginBottom: 10, boxSizing: "border-box" }}
+                          />
+                          <div style={{ display: "flex", gap: 8 }}>
+                            <button type="button" onClick={() => setIsRascunhoModalAberto(false)}
+                              style={{ flex: 1, height: 44, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text-2)", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
+                              Cancelar
+                            </button>
+                            <button type="button"
+                              onClick={handleSalvarRascunho}
+                              disabled={assinaturaNome.trim().length === 0 || isSalvandoPending}
+                              style={{ flex: 2, height: 44, background: "var(--surface)", color: "var(--text-2)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: assinaturaNome.trim().length === 0 || isSalvandoPending ? "not-allowed" : "pointer", opacity: assinaturaNome.trim().length === 0 || isSalvandoPending ? 0.5 : 1 }}>
+                              {isSalvandoPending ? "Salvando…" : "Salvar rascunho"}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Modal inline: finalizar */}
+                      {isFinalizarModalAberto && (
+                        <div style={{ flexShrink: 0, padding: "14px 16px", borderTop: "1px solid var(--border)", background: "var(--surface-2)" }}>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-2)", marginBottom: 8 }}>Nome de quem recebeu *</div>
+                          <input
+                            type="text"
+                            placeholder="Digite seu nome completo"
+                            value={assinaturaNome}
+                            onChange={(e) => setAssinaturaNome(e.target.value)}
+                            autoFocus
+                            style={{ width: "100%", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", fontSize: 14, padding: "10px 12px", outline: "none", marginBottom: 10, boxSizing: "border-box" }}
+                          />
+                          <div style={{ display: "flex", gap: 8 }}>
+                            <button type="button" onClick={() => setIsFinalizarModalAberto(false)}
+                              style={{ flex: 1, height: 44, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text-2)", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
+                              Cancelar
+                            </button>
+                            <button type="button"
+                              onClick={handleFinalizarRecebimento}
+                              disabled={assinaturaNome.trim().length === 0 || isRecebendoPending}
+                              style={{ flex: 2, height: 44, background: "#22C55E", color: "#fff", border: "none", borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: assinaturaNome.trim().length === 0 || isRecebendoPending ? "not-allowed" : "pointer", opacity: assinaturaNome.trim().length === 0 || isRecebendoPending ? 0.5 : 1 }}>
+                              {isRecebendoPending ? "Finalizando…" : "Confirmar e finalizar"}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Footer com dois botões */}
+                      <footer style={{ flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 16px", borderTop: "1px solid var(--border)", background: "var(--surface)" }}>
+                        <span style={{ fontSize: 12, color: "var(--text-3)", flexShrink: 0 }}>
+                          🟢 {conferenceSummary.ok} · 🟡 {conferenceSummary.parcial} · 🔴 {conferenceSummary.nao_recebido}
+                        </span>
+                        <div style={{ display: "flex", gap: 8 }}>
+                          <button type="button"
+                            onClick={() => { setIsRascunhoModalAberto((v) => !v); setIsFinalizarModalAberto(false); setAssinaturaNome(rec?.assinatura_nome ?? ""); }}
+                            disabled={isRascunhoModalAberto}
+                            style={{ height: 48, padding: "0 16px", background: "var(--surface-2)", color: "var(--text-2)", border: "1px solid var(--border)", borderRadius: 10, fontSize: 13, fontWeight: 600, cursor: isRascunhoModalAberto ? "default" : "pointer", whiteSpace: "nowrap" }}>
+                            Salvar rascunho
+                          </button>
+                          <button type="button"
+                            onClick={() => { setIsFinalizarModalAberto((v) => !v); setIsRascunhoModalAberto(false); setAssinaturaNome(rec?.assinatura_nome ?? ""); }}
+                            disabled={isFinalizarModalAberto}
+                            style={{ height: 48, padding: "0 20px", background: "#22C55E", color: "#fff", border: "none", borderRadius: 10, fontSize: 14, fontWeight: 700, cursor: isFinalizarModalAberto ? "default" : "pointer", whiteSpace: "nowrap" }}>
+                            Finalizar →
+                          </button>
+                        </div>
+                      </footer>
+                    </>
+                  )}
+                </>
+              );
+            })() : (
+              // ── LISTA DE PEDIDOS PARA RECEBIMENTO ──────────────────────
+              <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px", display: "flex", flexDirection: "column", gap: 24 }}>
+
+                {/* Grupo: Em andamento */}
+                {pedidosEmAndamento.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: "#F59E0B", textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+                      🟠 Em andamento ({pedidosEmAndamento.length})
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {pedidosEmAndamento.map((p) => (
+                        <div key={p.id} onClick={() => handleSelecionarPedido(p)}
+                          style={{ padding: "14px 16px", background: "var(--surface)", border: "1px solid #F59E0B", borderLeft: "3px solid #F59E0B", borderRadius: 10, cursor: "pointer", display: "flex", alignItems: "center", gap: 12 }}>
+                          <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                              <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>{formatDateTime(p.data_pedido)}</span>
+                              <StatusBadge status={p.status} />
+                              <span style={{ fontSize: 11, fontWeight: 700, background: "#92400E", color: "#FDE68A", borderRadius: 99, padding: "2px 8px" }}>🟠 Rascunho</span>
+                            </div>
+                            <span style={{ fontSize: 12, color: "var(--text-3)" }}>
+                              {p.purchase_order_items.length} {p.purchase_order_items.length === 1 ? "item" : "itens"}
+                            </span>
+                          </div>
+                          <ChevronRight size={18} style={{ color: "var(--text-3)", flexShrink: 0 }} />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Grupo: Aguardando recebimento */}
+                {pedidosAguardando.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 8 }}>
+                      Aguardando recebimento ({pedidosAguardando.length})
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {pedidosAguardando.map((p) => (
+                        <div key={p.id} onClick={() => handleSelecionarPedido(p)}
+                          style={{ padding: "14px 16px", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, cursor: "pointer", display: "flex", alignItems: "center", gap: 12 }}>
+                          <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                              <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>{formatDateTime(p.data_pedido)}</span>
+                              <StatusBadge status={p.status} />
+                            </div>
+                            <span style={{ fontSize: 12, color: "var(--text-3)" }}>
+                              {p.purchase_order_items.length} {p.purchase_order_items.length === 1 ? "item" : "itens"}
+                            </span>
+                          </div>
+                          <ChevronRight size={18} style={{ color: "var(--text-3)", flexShrink: 0 }} />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Grupo: Finalizados */}
+                {pedidosFinalizados.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: "#15803D", textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 8 }}>
+                      ✓ Finalizados ({pedidosFinalizados.length})
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {pedidosFinalizados.map((p) => (
+                        <div key={p.id} onClick={() => handleSelecionarPedido(p)}
+                          style={{ padding: "14px 16px", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, cursor: "pointer", display: "flex", alignItems: "center", gap: 12, opacity: 0.65 }}>
+                          <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                              <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>{formatDateTime(p.data_pedido)}</span>
+                              <StatusBadge status={p.status} />
+                              <span style={{ fontSize: 11, fontWeight: 700, background: "#15803D", color: "#fff", borderRadius: 99, padding: "2px 8px" }}>✓ Recebido</span>
+                            </div>
+                            {p.recebimento?.assinatura_nome && (
+                              <span style={{ fontSize: 12, color: "var(--text-3)" }}>Recebido por: {p.recebimento.assinatura_nome}</span>
+                            )}
+                          </div>
+                          <ChevronRight size={18} style={{ color: "var(--text-3)", flexShrink: 0 }} />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {pedidosEmAndamento.length === 0 && pedidosAguardando.length === 0 && pedidosFinalizados.length === 0 && (
+                  <div style={{ color: "var(--text-3)", fontSize: 13, textAlign: "center", paddingTop: 48 }}>Nenhum pedido encontrado.</div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── ABA HISTÓRICO ────────────────────────────────────────────── */}
+        {abaAtiva === "historico" && (
+          <div style={{ height: "100%", overflowY: "auto", padding: "16px 16px" }}>
+            {pedidosVisiveis.length === 0 ? (
+              <div style={{ color: "var(--text-3)", fontSize: 13, textAlign: "center", padding: "48px 0" }}>Nenhum pedido encontrado para esta unidade.</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                {pedidosVisiveis.map((p) => {
+                  const isExpanded = expandedId === p.id;
+                  const isConfirming = confirmingDelete === p.id;
+                  const isDeleting = deletingId === p.id;
+                  return (
+                    <div key={p.id} style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", boxShadow: "0 1px 3px rgba(0,0,0,0.08)" }}>
+                      <div onClick={() => setExpandedId(isExpanded ? null : p.id)}
+                        style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10, padding: "12px 16px", cursor: "pointer", borderBottom: isExpanded ? "1px solid var(--border)" : "none", background: isExpanded ? "var(--surface-2)" : "var(--surface)" }}>
+                        <span style={{ color: "var(--text-3)", display: "flex", flexShrink: 0 }}>{isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</span>
+                        <span style={{ fontSize: 13, color: "var(--text-2)", flexShrink: 0 }}>{formatDateTime(p.data_pedido)}</span>
+                        <StatusBadge status={p.status} />
+                        <span style={{ fontSize: 12, color: "var(--text-3)", flexShrink: 0 }}>{p.purchase_order_items.length} {p.purchase_order_items.length === 1 ? "item" : "itens"}</span>
+                        {(p as PedidoComItens).solicitante_nome && (
+                          <span style={{ fontSize: 12, color: "var(--text-3)", flexShrink: 0 }}>· {(p as PedidoComItens).solicitante_nome}</span>
+                        )}
+                        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }} onClick={(e) => e.stopPropagation()}>
+                          <button type="button" onClick={() => handlePdfExport(p)} style={smallBtn()}>📄 PDF</button>
+                          {isConfirming ? (
+                            <>
+                              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-2)", cursor: "pointer" }}>
+                                <input type="checkbox" checked={deleteChecked} onChange={(e) => setDeleteChecked(e.target.checked)} />
+                                Confirmar exclusão
+                              </label>
+                              <button type="button" onClick={() => { setConfirmingDelete(null); setDeleteChecked(false); }} style={smallBtn()}>Cancelar</button>
+                              <button type="button" disabled={!deleteChecked || isDeleting} onClick={() => handleDeleteConfirm(p.id)} style={smallBtn(deleteChecked && !isDeleting, true)}>
+                                {isDeleting ? "Excluindo…" : "Excluir"}
+                              </button>
+                            </>
+                          ) : (
+                            <button type="button" onClick={() => { setConfirmingDelete(p.id); setDeleteChecked(false); }} style={smallBtn()}>🗑️ Excluir</button>
+                          )}
+                        </div>
+                      </div>
+                      {isExpanded && (
+                        <div style={{ padding: "16px 20px" }}>
+                          {p.purchase_order_items.length === 0 ? (
+                            <div style={{ color: "var(--text-3)", fontSize: 13, textAlign: "center" }}>Sem itens.</div>
+                          ) : (
+                            Array.from(groupItemsByCategoria(p.purchase_order_items, produtosPorNome)).map(([cat, items]) => (
+                              <div key={cat} style={{ marginBottom: 16 }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 8, paddingBottom: 6, marginBottom: 6, borderBottom: "1px solid var(--border)" }}>
+                                  <span style={{ fontSize: 11, fontWeight: 700, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: 0.7 }}>{cat}</span>
+                                  <span style={{ fontSize: 11, color: "var(--text-3)" }}>({items.length})</span>
                                 </div>
-                                <div style={{ fontSize: 12, color: "var(--text-3)" }}>
-                                  Pedido: {ri.quantidade_pedida} {ri.unidade ?? ""} · Recebido: {ri.quantidade_recebida} {ri.unidade ?? ""}
-                                </div>
-                                {ri.observacao && (
-                                  <div style={{ fontSize: 11, color: "var(--text-3)", fontStyle: "italic", marginTop: 4 }}>{ri.observacao}</div>
-                                )}
+                                {items.map((item: PurchaseOrderItemRow) => (
+                                  <div key={item.id} style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "5px 0", borderBottom: "1px solid var(--border)" }}>
+                                    <span style={{ flex: 1, fontSize: 13, color: "var(--text)" }}>{item.nome}</span>
+                                    <span style={{ fontSize: 13, fontWeight: 700, color: "var(--text-2)", flexShrink: 0 }}>{item.quantidade}</span>
+                                    <span style={{ fontSize: 11, color: "var(--text-3)", width: 28, textAlign: "right", flexShrink: 0 }}>{item.unidade ?? ""}</span>
+                                  </div>
+                                ))}
                               </div>
-                            );
-                          })}
-                          {rec.observacao && (
-                            <div style={{ marginTop: 8, background: "var(--surface-2)", border: "1px solid var(--border)", borderLeft: "3px solid var(--text-3)", borderRadius: 6, padding: "10px 12px", fontSize: 13, color: "var(--text-3)", fontStyle: "italic" }}>
-                              Obs geral: {rec.observacao}
+                            ))
+                          )}
+                          {p.observacoes && (
+                            <div style={{ marginTop: 12, background: "var(--surface-2)", border: "1px solid var(--border)", borderLeft: "3px solid var(--text-3)", borderRadius: 6, padding: "10px 12px", fontSize: 13, color: "var(--text-3)", fontStyle: "italic" }}>
+                              Obs: {p.observacoes}
                             </div>
                           )}
                         </div>
-                      ) : (
-                        // ── Modo edição ──
-                        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                          {Array.from(groupItemsByCategoria(pedidoConferencia.purchase_order_items, produtosPorNome)).map(([cat, items]) => (
-                            <div key={cat}>
-                              <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: 0.7, paddingBottom: 6, marginBottom: 8, borderBottom: "1px solid var(--border)" }}>
-                                {cat} ({items.length})
-                              </div>
-                              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                                {items.map((item: PurchaseOrderItemRow) => {
-                                  const qtdPedida = Number(item.quantidade);
-                                  const qtdRec = qtdsRecebidas[item.id] ?? qtdPedida;
-                                  const status = getItemStatus(item.id, qtdPedida);
-                                  const conf = STATUS_CONF[status];
-                                  const catProd = produtosPorNome.get(item.nome)?.categoria ?? "";
-                                  return (
-                                    <div key={item.id} style={{ padding: "14px 16px", background: "var(--surface)", border: "1px solid var(--border)", borderLeft: `3px solid ${conf.border}`, borderRadius: 10, display: "flex", flexDirection: "column", gap: 8 }}>
-                                      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
-                                        <div>
-                                          <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text)", textTransform: "uppercase", letterSpacing: 0.2 }}>{item.nome}</div>
-                                          <div style={{ fontSize: 11, color: "var(--text-3)", marginTop: 2 }}>{LABEL_MAP[catProd] ?? catProd}</div>
-                                          <div style={{ fontSize: 12, color: "var(--text-3)", marginTop: 4 }}>Pedido: {qtdPedida} {item.unidade ?? ""}</div>
-                                        </div>
-                                        <span style={{ fontSize: 12, color: "var(--text-2)", flexShrink: 0 }}>{conf.emoji} {conf.label}</span>
-                                      </div>
-                                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                                        <span style={{ fontSize: 12, color: "var(--text-3)", flexShrink: 0 }}>Recebido:</span>
-                                        <button type="button"
-                                          onClick={() => setQtdsRecebidas((p) => ({ ...p, [item.id]: Math.max(0, (p[item.id] ?? qtdPedida) - 1) }))}
-                                          disabled={qtdRec <= 0}
-                                          style={{ width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid var(--border)", borderRadius: 8, background: "var(--surface-2)", color: "var(--text)", fontSize: 20, fontWeight: 700, cursor: qtdRec <= 0 ? "not-allowed" : "pointer", opacity: qtdRec <= 0 ? 0.3 : 1 }}>−</button>
-                                        <input type="number" inputMode="decimal" min="0" step="any" value={qtdRec === 0 ? "" : qtdRec} placeholder="0"
-                                          onChange={(e) => { const n = parseFloat(e.target.value); setQtdsRecebidas((p) => ({ ...p, [item.id]: isNaN(n) || n < 0 ? 0 : n })); }}
-                                          style={{ width: 60, height: 44, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", fontSize: 16, fontWeight: 700, textAlign: "center", outline: "none", padding: "0 4px" }} />
-                                        <button type="button"
-                                          onClick={() => setQtdsRecebidas((p) => ({ ...p, [item.id]: (p[item.id] ?? qtdPedida) + 1 }))}
-                                          style={{ width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid var(--border)", borderRadius: 8, background: "var(--surface-2)", color: "var(--text)", fontSize: 20, fontWeight: 700, cursor: "pointer" }}>+</button>
-                                        <span style={{ fontSize: 12, color: "var(--text-3)" }}>{item.unidade ?? ""}</span>
-                                      </div>
-                                      <input type="text" placeholder="Obs: ex: chegou amassado…"
-                                        value={obsItens[item.id] ?? ""}
-                                        onChange={(e) => setObsItens((p) => ({ ...p, [item.id]: e.target.value }))}
-                                        style={{ background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text)", fontSize: 12, padding: "7px 10px", outline: "none", width: "100%" }} />
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          ))}
-                          <div style={{ marginTop: 4 }}>
-                            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: 0.7, marginBottom: 6 }}>Observação geral</div>
-                            <textarea rows={2} placeholder="Observações do recebimento (opcional)…"
-                              value={obsGeralRecebimento}
-                              onChange={(e) => setObsGeralRecebimento(e.target.value)}
-                              style={{ width: "100%", background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", fontSize: 13, padding: "10px 12px", outline: "none", resize: "vertical", boxSizing: "border-box" }} />
-                          </div>
-                        </div>
                       )}
                     </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
 
-                    {/* Footer + modais inline — só em modo edição */}
-                    {isEditMode && conferenceSummary && (
-                      <>
-                        {/* Modal inline: salvar rascunho */}
-                        {isRascunhoModalAberto && (
-                          <div style={{ flexShrink: 0, padding: "14px 16px", borderTop: "1px solid var(--border)", background: "var(--surface-2)" }}>
-                            <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-2)", marginBottom: 8 }}>Nome de quem está recebendo *</div>
-                            <input
-                              type="text"
-                              placeholder="Digite seu nome completo"
-                              value={assinaturaNome}
-                              onChange={(e) => setAssinaturaNome(e.target.value)}
-                              autoFocus
-                              style={{ width: "100%", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", fontSize: 14, padding: "10px 12px", outline: "none", marginBottom: 10, boxSizing: "border-box" }}
-                            />
-                            <div style={{ display: "flex", gap: 8 }}>
-                              <button type="button" onClick={() => setIsRascunhoModalAberto(false)}
-                                style={{ flex: 1, height: 44, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text-2)", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
-                                Cancelar
-                              </button>
-                              <button type="button"
-                                onClick={handleSalvarRascunho}
-                                disabled={assinaturaNome.trim().length === 0 || isSalvandoPending}
-                                style={{ flex: 2, height: 44, background: "var(--surface)", color: "var(--text-2)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: assinaturaNome.trim().length === 0 || isSalvandoPending ? "not-allowed" : "pointer", opacity: assinaturaNome.trim().length === 0 || isSalvandoPending ? 0.5 : 1 }}>
-                                {isSalvandoPending ? "Salvando…" : "Salvar rascunho"}
-                              </button>
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Modal inline: finalizar */}
-                        {isFinalizarModalAberto && (
-                          <div style={{ flexShrink: 0, padding: "14px 16px", borderTop: "1px solid var(--border)", background: "var(--surface-2)" }}>
-                            <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-2)", marginBottom: 8 }}>Nome de quem recebeu *</div>
-                            <input
-                              type="text"
-                              placeholder="Digite seu nome completo"
-                              value={assinaturaNome}
-                              onChange={(e) => setAssinaturaNome(e.target.value)}
-                              autoFocus
-                              style={{ width: "100%", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", fontSize: 14, padding: "10px 12px", outline: "none", marginBottom: 10, boxSizing: "border-box" }}
-                            />
-                            <div style={{ display: "flex", gap: 8 }}>
-                              <button type="button" onClick={() => setIsFinalizarModalAberto(false)}
-                                style={{ flex: 1, height: 44, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text-2)", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
-                                Cancelar
-                              </button>
-                              <button type="button"
-                                onClick={handleFinalizarRecebimento}
-                                disabled={assinaturaNome.trim().length === 0 || isRecebendoPending}
-                                style={{ flex: 2, height: 44, background: "#22C55E", color: "#fff", border: "none", borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: assinaturaNome.trim().length === 0 || isRecebendoPending ? "not-allowed" : "pointer", opacity: assinaturaNome.trim().length === 0 || isRecebendoPending ? 0.5 : 1 }}>
-                                {isRecebendoPending ? "Finalizando…" : "Confirmar e finalizar"}
-                              </button>
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Footer com dois botões */}
-                        <footer style={{ flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 16px", borderTop: "1px solid var(--border)", background: "var(--surface)" }}>
-                          <span style={{ fontSize: 12, color: "var(--text-3)", flexShrink: 0 }}>
-                            🟢 {conferenceSummary.ok} · 🟡 {conferenceSummary.parcial} · 🔴 {conferenceSummary.nao_recebido}
-                          </span>
-                          <div style={{ display: "flex", gap: 8 }}>
-                            <button type="button"
-                              onClick={() => { setIsRascunhoModalAberto((v) => !v); setIsFinalizarModalAberto(false); setAssinaturaNome(rec?.assinatura_nome ?? ""); }}
-                              disabled={isRascunhoModalAberto}
-                              style={{ height: 48, padding: "0 16px", background: "var(--surface-2)", color: "var(--text-2)", border: "1px solid var(--border)", borderRadius: 10, fontSize: 13, fontWeight: 600, cursor: isRascunhoModalAberto ? "default" : "pointer", whiteSpace: "nowrap" }}>
-                              Salvar rascunho
-                            </button>
-                            <button type="button"
-                              onClick={() => { setIsFinalizarModalAberto((v) => !v); setIsRascunhoModalAberto(false); setAssinaturaNome(rec?.assinatura_nome ?? ""); }}
-                              disabled={isFinalizarModalAberto}
-                              style={{ height: 48, padding: "0 20px", background: "#22C55E", color: "#fff", border: "none", borderRadius: 10, fontSize: 14, fontWeight: 700, cursor: isFinalizarModalAberto ? "default" : "pointer", whiteSpace: "nowrap" }}>
-                              Finalizar →
-                            </button>
-                          </div>
-                        </footer>
-                      </>
-                    )}
-                  </>
-                );
-              })() : (
-                // ── LISTA DE PEDIDOS ────────────────────────────────────────
-                <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px", display: "flex", flexDirection: "column", gap: 24 }}>
-
-                  {/* Grupo: Em andamento */}
-                  {pedidosEmAndamento.length > 0 && (
-                    <div>
-                      <div style={{ fontSize: 11, fontWeight: 800, color: "#F59E0B", textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
-                        🟠 Em andamento ({pedidosEmAndamento.length})
-                      </div>
-                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                        {pedidosEmAndamento.map((p) => (
-                          <div key={p.id} onClick={() => handleSelecionarPedido(p)}
-                            style={{ padding: "14px 16px", background: "var(--surface)", border: "1px solid #F59E0B", borderLeft: "3px solid #F59E0B", borderRadius: 10, cursor: "pointer", display: "flex", alignItems: "center", gap: 12 }}>
-                            <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
-                              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                                <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>{formatDateTime(p.data_pedido)}</span>
-                                <StatusBadge status={p.status} />
-                                <span style={{ fontSize: 11, fontWeight: 700, background: "#92400E", color: "#FDE68A", borderRadius: 99, padding: "2px 8px" }}>🟠 Rascunho</span>
-                              </div>
-                              <span style={{ fontSize: 12, color: "var(--text-3)" }}>
-                                {p.purchase_order_items.length} {p.purchase_order_items.length === 1 ? "item" : "itens"}
-                              </span>
-                            </div>
-                            <ChevronRight size={18} style={{ color: "var(--text-3)", flexShrink: 0 }} />
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Grupo: Aguardando recebimento */}
-                  {pedidosAguardando.length > 0 && (
-                    <div>
-                      <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 8 }}>
-                        Aguardando recebimento ({pedidosAguardando.length})
-                      </div>
-                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                        {pedidosAguardando.map((p) => (
-                          <div key={p.id} onClick={() => handleSelecionarPedido(p)}
-                            style={{ padding: "14px 16px", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, cursor: "pointer", display: "flex", alignItems: "center", gap: 12 }}>
-                            <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
-                              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                                <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>{formatDateTime(p.data_pedido)}</span>
-                                <StatusBadge status={p.status} />
-                              </div>
-                              <span style={{ fontSize: 12, color: "var(--text-3)" }}>
-                                {p.purchase_order_items.length} {p.purchase_order_items.length === 1 ? "item" : "itens"}
-                              </span>
-                            </div>
-                            <ChevronRight size={18} style={{ color: "var(--text-3)", flexShrink: 0 }} />
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Grupo: Finalizados */}
-                  {pedidosFinalizados.length > 0 && (
-                    <div>
-                      <div style={{ fontSize: 11, fontWeight: 800, color: "#15803D", textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 8 }}>
-                        ✓ Finalizados ({pedidosFinalizados.length})
-                      </div>
-                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                        {pedidosFinalizados.map((p) => (
-                          <div key={p.id} onClick={() => handleSelecionarPedido(p)}
-                            style={{ padding: "14px 16px", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, cursor: "pointer", display: "flex", alignItems: "center", gap: 12, opacity: 0.65 }}>
-                            <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
-                              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                                <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>{formatDateTime(p.data_pedido)}</span>
-                                <StatusBadge status={p.status} />
-                                <span style={{ fontSize: 11, fontWeight: 700, background: "#15803D", color: "#fff", borderRadius: 99, padding: "2px 8px" }}>✓ Recebido</span>
-                              </div>
-                              {p.recebimento?.assinatura_nome && (
-                                <span style={{ fontSize: 12, color: "var(--text-3)" }}>Recebido por: {p.recebimento.assinatura_nome}</span>
-                              )}
-                            </div>
-                            <ChevronRight size={18} style={{ color: "var(--text-3)", flexShrink: 0 }} />
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {pedidosEmAndamento.length === 0 && pedidosAguardando.length === 0 && pedidosFinalizados.length === 0 && (
-                    <div style={{ color: "var(--text-3)", fontSize: 13, textAlign: "center", paddingTop: 48 }}>Nenhum pedido encontrado.</div>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-
-        </div>
       </div>
 
       {/* ══ CARRINHO DRAWER ═════════════════════════════════════════════════ */}
@@ -855,7 +981,15 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
             </div>
             <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px" }}>
               {carrinho.length === 0 ? (
-                <div style={{ color: "var(--text-3)", fontSize: 13, textAlign: "center", paddingTop: 32 }}>Nenhum item adicionado.</div>
+                <div style={{ color: "var(--text-3)", fontSize: 13, textAlign: "center", paddingTop: 32 }}>
+                  <div>Nenhum item adicionado.</div>
+                  {rascunhoId && (
+                    <button type="button" onClick={handleDescartarRascunho} disabled={isPending}
+                      style={{ marginTop: 16, height: 36, padding: "0 16px", background: "transparent", border: "1px solid #EF4444", borderRadius: 8, color: "#EF4444", fontSize: 12, fontWeight: 600, cursor: isPending ? "not-allowed" : "pointer", opacity: isPending ? 0.5 : 1 }}>
+                      {isPending ? "Descartando…" : "🗑️ Descartar rascunho salvo"}
+                    </button>
+                  )}
+                </div>
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   {carrinho.map((item) => (
@@ -888,86 +1022,6 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
             </div>
           </div>
         </>
-      )}
-
-      {/* ══ HISTÓRICO (abaixo do 100dvh, tab pedidos) ═══════════════════════ */}
-      {abaAtiva === "pedidos" && (
-        <div style={{ padding: "32px 16px" }}>
-          <div style={{ borderTop: "1px solid var(--border)", paddingTop: 24, marginBottom: 20 }}>
-            <h2 style={{ fontSize: 16, fontWeight: 700, color: "var(--text)", margin: 0, letterSpacing: -0.2 }}>Histórico de Pedidos</h2>
-          </div>
-
-          {pedidosVisiveis.length === 0 ? (
-            <div style={{ color: "var(--text-3)", fontSize: 13, textAlign: "center", padding: "24px 0" }}>Nenhum pedido encontrado para esta unidade.</div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-              {pedidosVisiveis.map((p) => {
-                const isExpanded = expandedId === p.id;
-                const isConfirming = confirmingDelete === p.id;
-                const isDeleting = deletingId === p.id;
-                return (
-                  <div key={p.id} style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", boxShadow: "0 1px 3px rgba(0,0,0,0.08)" }}>
-                    <div onClick={() => setExpandedId(isExpanded ? null : p.id)}
-                      style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10, padding: "12px 16px", cursor: "pointer", borderBottom: isExpanded ? "1px solid var(--border)" : "none", background: isExpanded ? "var(--surface-2)" : "var(--surface)" }}>
-                      <span style={{ color: "var(--text-3)", display: "flex", flexShrink: 0 }}>{isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</span>
-                      <span style={{ fontSize: 13, color: "var(--text-2)", flexShrink: 0 }}>{formatDateTime(p.data_pedido)}</span>
-                      <StatusBadge status={p.status} />
-                      <span style={{ fontSize: 12, color: "var(--text-3)", flexShrink: 0 }}>{p.purchase_order_items.length} {p.purchase_order_items.length === 1 ? "item" : "itens"}</span>
-                      {(p as PedidoComItens).solicitante_nome && (
-                        <span style={{ fontSize: 12, color: "var(--text-3)", flexShrink: 0 }}>· {(p as PedidoComItens).solicitante_nome}</span>
-                      )}
-                      <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }} onClick={(e) => e.stopPropagation()}>
-                        <button type="button" onClick={() => handlePdfExport(p)} style={smallBtn()}>📄 PDF</button>
-                        {isConfirming ? (
-                          <>
-                            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-2)", cursor: "pointer" }}>
-                              <input type="checkbox" checked={deleteChecked} onChange={(e) => setDeleteChecked(e.target.checked)} />
-                              Confirmar exclusão
-                            </label>
-                            <button type="button" onClick={() => { setConfirmingDelete(null); setDeleteChecked(false); }} style={smallBtn()}>Cancelar</button>
-                            <button type="button" disabled={!deleteChecked || isDeleting} onClick={() => handleDeleteConfirm(p.id)} style={smallBtn(deleteChecked && !isDeleting, true)}>
-                              {isDeleting ? "Excluindo…" : "Excluir"}
-                            </button>
-                          </>
-                        ) : (
-                          <button type="button" onClick={() => { setConfirmingDelete(p.id); setDeleteChecked(false); }} style={smallBtn()}>🗑️ Excluir</button>
-                        )}
-                      </div>
-                    </div>
-                    {isExpanded && (
-                      <div style={{ padding: "16px 20px" }}>
-                        {p.purchase_order_items.length === 0 ? (
-                          <div style={{ color: "var(--text-3)", fontSize: 13, textAlign: "center" }}>Sem itens.</div>
-                        ) : (
-                          Array.from(groupItemsByCategoria(p.purchase_order_items, produtosPorNome)).map(([cat, items]) => (
-                            <div key={cat} style={{ marginBottom: 16 }}>
-                              <div style={{ display: "flex", alignItems: "center", gap: 8, paddingBottom: 6, marginBottom: 6, borderBottom: "1px solid var(--border)" }}>
-                                <span style={{ fontSize: 11, fontWeight: 700, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: 0.7 }}>{cat}</span>
-                                <span style={{ fontSize: 11, color: "var(--text-3)" }}>({items.length})</span>
-                              </div>
-                              {items.map((item: PurchaseOrderItemRow) => (
-                                <div key={item.id} style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "5px 0", borderBottom: "1px solid var(--border)" }}>
-                                  <span style={{ flex: 1, fontSize: 13, color: "var(--text)" }}>{item.nome}</span>
-                                  <span style={{ fontSize: 13, fontWeight: 700, color: "var(--text-2)", flexShrink: 0 }}>{item.quantidade}</span>
-                                  <span style={{ fontSize: 11, color: "var(--text-3)", width: 28, textAlign: "right", flexShrink: 0 }}>{item.unidade ?? ""}</span>
-                                </div>
-                              ))}
-                            </div>
-                          ))
-                        )}
-                        {p.observacoes && (
-                          <div style={{ marginTop: 12, background: "var(--surface-2)", border: "1px solid var(--border)", borderLeft: "3px solid var(--text-3)", borderRadius: 6, padding: "10px 12px", fontSize: 13, color: "var(--text-3)", fontStyle: "italic" }}>
-                            Obs: {p.observacoes}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
       )}
     </div>
   );

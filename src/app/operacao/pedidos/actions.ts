@@ -25,6 +25,13 @@ export type PedidoComItens = PurchaseOrderRow & {
   solicitante_nome?: string | null;
 };
 
+export type RascunhoPedido = {
+  id: string;
+  itens: Array<{ nome: string; quantidade: number; unidade: string }>;
+  observacoes: string | null;
+  solicitante_nome: string | null;
+};
+
 export async function getProdutos(unitId: string): Promise<ProdutoCatalogo[]> {
   const supabase = await createSupabaseServerClient();
   if (!supabase) return [];
@@ -108,25 +115,63 @@ export async function criarPedido(
   const supabase = await createSupabaseServerClient();
   if (!supabase) return { ok: false, error: "Erro ao conectar ao banco de dados." };
 
-  const { data: pedido, error: pedidoError } = (await supabase
+  // Verifica se existe rascunho para aproveitar (promove em vez de criar novo)
+  const { data: rascunhoArr } = (await supabase
     .from("purchase_orders" as never)
-    .insert({
-      unit_id: unit.id,
-      brand_id: unit.brand_id,
-      status: "enviado",
-      observacoes,
-      created_by: user.id,
-      solicitante_nome: solicitanteNome || null,
-    } as never)
-    .select()
-    .single()) as unknown as {
-    data: PurchaseOrderRow | null;
-    error: { message: string } | null;
-  };
+    .select("id")
+    .eq("unit_id", unit.id)
+    .eq("status", "rascunho")
+    .order("created_at", { ascending: false })
+    .limit(1)) as unknown as { data: Array<{ id: string }> | null; error: unknown };
 
-  if (pedidoError || !pedido) {
-    console.error("[criarPedido] pedido", pedidoError?.message);
-    return { ok: false, error: pedidoError?.message ?? "Erro ao criar pedido." };
+  const rascunhoId = rascunhoArr?.[0]?.id ?? null;
+  let pedido: PurchaseOrderRow;
+
+  if (rascunhoId) {
+    const { data: updated, error: updateError } = (await supabase
+      .from("purchase_orders" as never)
+      .update({
+        status: "enviado",
+        observacoes,
+        solicitante_nome: solicitanteNome || null,
+      } as never)
+      .eq("id", rascunhoId)
+      .select()
+      .single()) as unknown as { data: PurchaseOrderRow | null; error: { message: string } | null };
+
+    if (updateError || !updated) {
+      console.error("[criarPedido] update rascunho", updateError?.message);
+      return { ok: false, error: updateError?.message ?? "Erro ao enviar pedido." };
+    }
+
+    await (supabase
+      .from("purchase_order_items" as never)
+      .delete()
+      .eq("order_id", rascunhoId) as unknown as Promise<unknown>);
+
+    pedido = updated;
+  } else {
+    const { data: criado, error: pedidoError } = (await supabase
+      .from("purchase_orders" as never)
+      .insert({
+        unit_id: unit.id,
+        brand_id: unit.brand_id,
+        status: "enviado",
+        observacoes,
+        created_by: user.id,
+        solicitante_nome: solicitanteNome || null,
+      } as never)
+      .select()
+      .single()) as unknown as {
+      data: PurchaseOrderRow | null;
+      error: { message: string } | null;
+    };
+
+    if (pedidoError || !criado) {
+      console.error("[criarPedido] insert", pedidoError?.message);
+      return { ok: false, error: pedidoError?.message ?? "Erro ao criar pedido." };
+    }
+    pedido = criado;
   }
 
   const itensMapped = itens.map((item) => ({
@@ -151,6 +196,118 @@ export async function criarPedido(
 
   revalidatePath("/operacao/pedidos");
   return { ok: true, data: pedido };
+}
+
+// ── getRascunhoPedido ────────────────────────────────────────────────────────
+
+export async function getRascunhoPedido(unitId: string): Promise<RascunhoPedido | null> {
+  const supabase = await createSupabaseServerClient();
+  if (!supabase) return null;
+
+  const { data } = (await supabase
+    .from("purchase_orders" as never)
+    .select("*, purchase_order_items(*)")
+    .eq("unit_id", unitId)
+    .eq("status", "rascunho")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .single()) as unknown as { data: PedidoComItens | null; error: unknown };
+
+  if (!data) return null;
+
+  return {
+    id: data.id,
+    itens: data.purchase_order_items.map((i) => ({
+      nome: i.nome,
+      quantidade: Number(i.quantidade),
+      unidade: i.unidade ?? "kg",
+    })),
+    observacoes: data.observacoes ?? null,
+    solicitante_nome: data.solicitante_nome ?? null,
+  };
+}
+
+// ── salvarRascunhoPedido ─────────────────────────────────────────────────────
+
+export async function salvarRascunhoPedido(
+  itens: ItemPedido[],
+  solicitanteNome: string,
+  observacoes: string | null,
+): Promise<ActionResult<{ pedidoId: string }>> {
+  const user = await requireUser();
+  const unit = await getCurrentUnit();
+  if (!unit) return { ok: false, error: "Nenhuma unidade selecionada." };
+  if (!unit.brand_id) return { ok: false, error: "Unidade sem marca associada." };
+
+  const supabase = await createSupabaseServerClient();
+  if (!supabase) return { ok: false, error: "Supabase indisponível." };
+
+  const { data: existingArr } = (await supabase
+    .from("purchase_orders" as never)
+    .select("id")
+    .eq("unit_id", unit.id)
+    .eq("status", "rascunho")
+    .order("created_at", { ascending: false })
+    .limit(1)) as unknown as { data: Array<{ id: string }> | null; error: unknown };
+
+  const existingId = existingArr?.[0]?.id ?? null;
+  let pedidoId: string;
+
+  if (existingId) {
+    await (supabase
+      .from("purchase_orders" as never)
+      .update({ observacoes, solicitante_nome: solicitanteNome || null } as never)
+      .eq("id", existingId) as unknown as Promise<unknown>);
+
+    await (supabase
+      .from("purchase_order_items" as never)
+      .delete()
+      .eq("order_id", existingId) as unknown as Promise<unknown>);
+
+    pedidoId = existingId;
+  } else {
+    type PedRow = { id: string };
+    const { data: ped, error: pedError } = (await supabase
+      .from("purchase_orders" as never)
+      .insert({
+        unit_id: unit.id,
+        brand_id: unit.brand_id,
+        status: "rascunho",
+        observacoes,
+        created_by: user.id,
+        solicitante_nome: solicitanteNome || null,
+      } as never)
+      .select()
+      .single()) as unknown as { data: PedRow | null; error: { message: string } | null };
+
+    if (pedError || !ped) {
+      console.error("[salvarRascunhoPedido]", pedError?.message);
+      return { ok: false, error: pedError?.message ?? "Erro ao criar rascunho." };
+    }
+    pedidoId = ped.id;
+  }
+
+  if (itens.length > 0) {
+    const itensMapped = itens.map((item) => ({
+      order_id: pedidoId,
+      nome: item.nome,
+      unidade: item.unidade,
+      quantidade: item.quantidade,
+      preco_unitario: 0,
+    }));
+
+    const { error: itensError } = (await supabase
+      .from("purchase_order_items" as never)
+      .insert(itensMapped as never)) as unknown as { error: { message: string } | null };
+
+    if (itensError) {
+      console.error("[salvarRascunhoPedido] itens", itensError.message);
+      return { ok: false, error: itensError.message };
+    }
+  }
+
+  // Não revalida path (operação silenciosa)
+  return { ok: true, data: { pedidoId } };
 }
 
 // ── Recebimento ─────────────────────────────────────────────────────────────

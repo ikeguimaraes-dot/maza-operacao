@@ -177,12 +177,39 @@ type RecebimentoData = {
   pedido_id: string;
   observacao: string | null;
   created_at: string;
+  status: string;
+  assinatura_nome: string | null;
   recebimento_itens: RecebimentoItemData[];
 };
 
 export type PedidoParaRecebimento = PedidoComItens & {
   recebimento: RecebimentoData | null;
 };
+
+// ── helpers compartilhados ───────────────────────────────────────────────────
+
+function buildItensMapped(recId: string, itens: RecebimentoItemInput[]) {
+  return itens.map((i) => {
+    const status: "ok" | "parcial" | "nao_recebido" =
+      i.quantidade_recebida <= 0
+        ? "nao_recebido"
+        : i.quantidade_recebida < i.quantidade_pedida
+          ? "parcial"
+          : "ok";
+    return {
+      recebimento_id: recId,
+      pedido_item_id: i.pedido_item_id,
+      nome: i.nome,
+      quantidade_pedida: i.quantidade_pedida,
+      quantidade_recebida: i.quantidade_recebida,
+      unidade: i.unidade,
+      status,
+      observacao: i.observacao ?? null,
+    };
+  });
+}
+
+// ── getPedidosParaRecebimento ────────────────────────────────────────────────
 
 export async function getPedidosParaRecebimento(
   unitId: string,
@@ -215,13 +242,103 @@ export async function getPedidosParaRecebimento(
   };
 
   const recMap = new Map((recebimentos ?? []).map((r) => [r.pedido_id, r]));
-  return pedidos.map((p) => ({ ...p, recebimento: recMap.get(p.id) ?? null }));
+
+  const merged = pedidos.map((p) => ({ ...p, recebimento: recMap.get(p.id) ?? null }));
+
+  // Ordem: rascunhos → aguardando → finalizados
+  merged.sort((a, b) => {
+    const order = (p: PedidoParaRecebimento) => {
+      if (p.recebimento?.status === "rascunho") return 0;
+      if (!p.recebimento) return 1;
+      return 2;
+    };
+    return order(a) - order(b);
+  });
+
+  return merged;
 }
+
+// ── salvarRascunhoRecebimento ────────────────────────────────────────────────
+
+export async function salvarRascunhoRecebimento(
+  pedidoId: string,
+  itens: RecebimentoItemInput[],
+  observacao: string | null,
+): Promise<ActionResult<{ recebimentoId: string }>> {
+  const user = await requireUser();
+  const unit = await getCurrentUnit();
+  if (!unit) return { ok: false, error: "Nenhuma unidade selecionada." };
+
+  const supabase = await createSupabaseServerClient();
+  if (!supabase) return { ok: false, error: "Supabase indisponível." };
+
+  // Busca rascunho existente
+  const { data: existingArr } = (await supabase
+    .from("recebimentos" as never)
+    .select("id")
+    .eq("pedido_id", pedidoId)
+    .eq("status", "rascunho")
+    .limit(1)) as unknown as { data: Array<{ id: string }> | null; error: unknown };
+
+  const existingId = existingArr?.[0]?.id ?? null;
+  let recId: string;
+
+  if (existingId) {
+    // Remove itens antigos e atualiza cabeçalho
+    await (supabase
+      .from("recebimento_itens" as never)
+      .delete()
+      .eq("recebimento_id", existingId) as unknown as Promise<unknown>);
+
+    await (supabase
+      .from("recebimentos" as never)
+      .update({ observacao } as never)
+      .eq("id", existingId) as unknown as Promise<unknown>);
+
+    recId = existingId;
+  } else {
+    type RecRow = { id: string };
+    const { data: rec, error: recError } = (await supabase
+      .from("recebimentos" as never)
+      .insert({
+        pedido_id: pedidoId,
+        unit_id: unit.id,
+        recebido_por: user.id,
+        observacao,
+        status: "rascunho",
+      } as never)
+      .select()
+      .single()) as unknown as { data: RecRow | null; error: { message: string } | null };
+
+    if (recError || !rec) {
+      console.error("[salvarRascunhoRecebimento]", recError?.message);
+      return { ok: false, error: recError?.message ?? "Erro ao criar rascunho." };
+    }
+    recId = rec.id;
+  }
+
+  const { error: itensError } = (await supabase
+    .from("recebimento_itens" as never)
+    .insert(buildItensMapped(recId, itens) as never)) as unknown as {
+    error: { message: string } | null;
+  };
+
+  if (itensError) {
+    console.error("[salvarRascunhoRecebimento] itens", itensError.message);
+    return { ok: false, error: itensError.message };
+  }
+
+  revalidatePath("/operacao/pedidos");
+  return { ok: true, data: { recebimentoId: recId } };
+}
+
+// ── finalizarRecebimento ─────────────────────────────────────────────────────
 
 export async function finalizarRecebimento(
   pedidoId: string,
   itens: RecebimentoItemInput[],
   observacao: string | null,
+  assinaturaNome: string,
 ): Promise<ActionResult<void>> {
   const user = await requireUser();
   const unit = await getCurrentUnit();
@@ -230,45 +347,57 @@ export async function finalizarRecebimento(
   const supabase = await createSupabaseServerClient();
   if (!supabase) return { ok: false, error: "Supabase indisponível." };
 
-  type RecRow = { id: string };
-  const { data: rec, error: recError } = (await supabase
+  // Verifica se existe rascunho para aproveitar o registro
+  const { data: existingArr } = (await supabase
     .from("recebimentos" as never)
-    .insert({
-      pedido_id: pedidoId,
-      unit_id: unit.id,
-      recebido_por: user.id,
-      observacao,
-    } as never)
-    .select()
-    .single()) as unknown as { data: RecRow | null; error: { message: string } | null };
+    .select("id")
+    .eq("pedido_id", pedidoId)
+    .eq("status", "rascunho")
+    .limit(1)) as unknown as { data: Array<{ id: string }> | null; error: unknown };
 
-  if (recError || !rec) {
-    console.error("[finalizarRecebimento] header", recError?.message);
-    return { ok: false, error: recError?.message ?? "Erro ao criar recebimento." };
+  const existingId = existingArr?.[0]?.id ?? null;
+  let recId: string;
+
+  if (existingId) {
+    // Promove rascunho a finalizado
+    await (supabase
+      .from("recebimentos" as never)
+      .update({ status: "finalizado", assinatura_nome: assinaturaNome, observacao } as never)
+      .eq("id", existingId) as unknown as Promise<unknown>);
+
+    await (supabase
+      .from("recebimento_itens" as never)
+      .delete()
+      .eq("recebimento_id", existingId) as unknown as Promise<unknown>);
+
+    recId = existingId;
+  } else {
+    type RecRow = { id: string };
+    const { data: rec, error: recError } = (await supabase
+      .from("recebimentos" as never)
+      .insert({
+        pedido_id: pedidoId,
+        unit_id: unit.id,
+        recebido_por: user.id,
+        observacao,
+        status: "finalizado",
+        assinatura_nome: assinaturaNome,
+      } as never)
+      .select()
+      .single()) as unknown as { data: RecRow | null; error: { message: string } | null };
+
+    if (recError || !rec) {
+      console.error("[finalizarRecebimento] header", recError?.message);
+      return { ok: false, error: recError?.message ?? "Erro ao criar recebimento." };
+    }
+    recId = rec.id;
   }
-
-  const itensMapped = itens.map((i) => {
-    const status: "ok" | "parcial" | "nao_recebido" =
-      i.quantidade_recebida <= 0
-        ? "nao_recebido"
-        : i.quantidade_recebida < i.quantidade_pedida
-          ? "parcial"
-          : "ok";
-    return {
-      recebimento_id: rec.id,
-      pedido_item_id: i.pedido_item_id,
-      nome: i.nome,
-      quantidade_pedida: i.quantidade_pedida,
-      quantidade_recebida: i.quantidade_recebida,
-      unidade: i.unidade,
-      status,
-      observacao: i.observacao ?? null,
-    };
-  });
 
   const { error: itensError } = (await supabase
     .from("recebimento_itens" as never)
-    .insert(itensMapped as never)) as unknown as { error: { message: string } | null };
+    .insert(buildItensMapped(recId, itens) as never)) as unknown as {
+    error: { message: string } | null;
+  };
 
   if (itensError) {
     console.error("[finalizarRecebimento] itens", itensError.message);
@@ -283,6 +412,8 @@ export async function finalizarRecebimento(
   revalidatePath("/operacao/pedidos");
   return { ok: true, data: undefined };
 }
+
+// ── deletarPedido ────────────────────────────────────────────────────────────
 
 export async function deletarPedido(pedidoId: string): Promise<ActionResult<void>> {
   await requireUser();

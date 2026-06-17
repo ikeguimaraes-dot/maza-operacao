@@ -4,9 +4,8 @@ import { Fragment, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { ShoppingBag, X, ChevronDown, ChevronRight, ArrowLeft } from "lucide-react";
-import { formatDateBR } from "@/lib/format";
 import type { PurchaseOrderItemRow, PurchaseOrderStatus } from "@kph/db/types/database";
-import { criarPedido, deletarPedido, finalizarRecebimento } from "./actions";
+import { criarPedido, deletarPedido, salvarRascunhoRecebimento, finalizarRecebimento } from "./actions";
 import type {
   ProdutoCatalogo,
   PedidoComItens,
@@ -37,9 +36,9 @@ const LABEL_MAP: Record<string, string> = {
 };
 
 const STATUS_CONF = {
-  ok:            { border: "#22C55E", emoji: "🟢", label: "OK" },
-  parcial:       { border: "#F59E0B", emoji: "🟡", label: "Parcial" },
-  nao_recebido:  { border: "#EF4444", emoji: "🔴", label: "Não recebido" },
+  ok:           { border: "#22C55E", emoji: "🟢", label: "OK" },
+  parcial:      { border: "#F59E0B", emoji: "🟡", label: "Parcial" },
+  nao_recebido: { border: "#EF4444", emoji: "🔴", label: "Não recebido" },
 } as const;
 
 function getCatEmoji(cat: string): string {
@@ -142,6 +141,7 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [isRecebendoPending, startRecebendoTransition] = useTransition();
+  const [isSalvandoPending, startSalvandoTransition] = useTransition();
 
   // ── Abas ──
   const [abaAtiva, setAbaAtiva] = useState<"pedidos" | "recebimento">("pedidos");
@@ -168,6 +168,9 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
   const [obsItens, setObsItens] = useState<Record<string, string>>({});
   const [obsGeralRecebimento, setObsGeralRecebimento] = useState("");
   const [recebidosLocal, setRecebidosLocal] = useState<string[]>([]);
+  const [rascunhoSalvoEm, setRascunhoSalvoEm] = useState<string | null>(null);
+  const [isFinalizarModalAberto, setIsFinalizarModalAberto] = useState(false);
+  const [assinaturaNome, setAssinaturaNome] = useState("");
 
   // ── Dados derivados ──
   const carrinho = useMemo(
@@ -184,13 +187,16 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
     [pedidosIniciais, deletedIds],
   );
 
-  const pedidosRecebimentoOrdenados = useMemo(
-    () => [...pedidosParaRecebimento].sort((a, b) => {
-      const aRec = a.recebimento !== null || recebidosLocal.includes(a.id);
-      const bRec = b.recebimento !== null || recebidosLocal.includes(b.id);
-      if (aRec === bRec) return 0;
-      return aRec ? 1 : -1;
-    }),
+  const pedidosEmAndamento = useMemo(
+    () => pedidosParaRecebimento.filter((p) => p.recebimento?.status === "rascunho"),
+    [pedidosParaRecebimento],
+  );
+  const pedidosAguardando = useMemo(
+    () => pedidosParaRecebimento.filter((p) => !p.recebimento && !recebidosLocal.includes(p.id)),
+    [pedidosParaRecebimento, recebidosLocal],
+  );
+  const pedidosFinalizados = useMemo(
+    () => pedidosParaRecebimento.filter((p) => p.recebimento?.status === "finalizado" || recebidosLocal.includes(p.id)),
     [pedidosParaRecebimento, recebidosLocal],
   );
 
@@ -264,10 +270,28 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
 
   function handleSelecionarPedido(p: PedidoParaRecebimento) {
     setPedidoConferencia(p);
-    if (!p.recebimento) {
-      const init: Record<string, number> = {};
-      p.purchase_order_items.forEach((item) => { init[item.id] = Number(item.quantidade); });
-      setQtdsRecebidas(init);
+    setRascunhoSalvoEm(null);
+    setIsFinalizarModalAberto(false);
+    setAssinaturaNome("");
+
+    if (p.recebimento?.status === "finalizado") return; // modo leitura
+
+    if (p.recebimento?.status === "rascunho") {
+      // Carrega quantidades salvas no rascunho
+      const initQtds: Record<string, number> = {};
+      const initObs: Record<string, string> = {};
+      for (const ri of p.recebimento.recebimento_itens) {
+        initQtds[ri.pedido_item_id] = ri.quantidade_recebida;
+        if (ri.observacao) initObs[ri.pedido_item_id] = ri.observacao;
+      }
+      setQtdsRecebidas(initQtds);
+      setObsItens(initObs);
+      setObsGeralRecebimento(p.recebimento.observacao ?? "");
+    } else {
+      // Novo recebimento: inicializa com quantidade pedida
+      const initQtds: Record<string, number> = {};
+      p.purchase_order_items.forEach((item) => { initQtds[item.id] = Number(item.quantidade); });
+      setQtdsRecebidas(initQtds);
       setObsItens({});
       setObsGeralRecebimento("");
     }
@@ -276,6 +300,7 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
   function handleVoltarRecebimento() {
     setPedidoConferencia(null);
     setQtdsRecebidas({}); setObsItens({}); setObsGeralRecebimento("");
+    setRascunhoSalvoEm(null); setIsFinalizarModalAberto(false); setAssinaturaNome("");
   }
 
   function getItemStatus(itemId: string, qtdPedida: number): "ok" | "parcial" | "nao_recebido" {
@@ -285,18 +310,44 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
     return "ok";
   }
 
-  function handleFinalizarRecebimento() {
+  function buildItensPayload(): RecebimentoItemInput[] {
+    if (!pedidoConferencia) return [];
+    return pedidoConferencia.purchase_order_items.map((item) => ({
+      pedido_item_id: item.id,
+      nome: item.nome,
+      quantidade_pedida: Number(item.quantidade),
+      quantidade_recebida: qtdsRecebidas[item.id] ?? Number(item.quantidade),
+      unidade: item.unidade ?? "kg",
+      observacao: obsItens[item.id],
+    }));
+  }
+
+  function handleSalvarRascunho() {
     if (!pedidoConferencia) return;
+    startSalvandoTransition(async () => {
+      const result = await salvarRascunhoRecebimento(
+        pedidoConferencia.id,
+        buildItensPayload(),
+        obsGeralRecebimento || null,
+      );
+      if (result.ok) {
+        const hora = new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+        setRascunhoSalvoEm(hora);
+        toast.success("Rascunho salvo — você pode continuar depois");
+        router.refresh();
+      } else { toast.error(result.error); }
+    });
+  }
+
+  function handleFinalizarRecebimento() {
+    if (!pedidoConferencia || assinaturaNome.trim().length === 0) return;
     startRecebendoTransition(async () => {
-      const itens: RecebimentoItemInput[] = pedidoConferencia.purchase_order_items.map((item) => ({
-        pedido_item_id: item.id,
-        nome: item.nome,
-        quantidade_pedida: Number(item.quantidade),
-        quantidade_recebida: qtdsRecebidas[item.id] ?? Number(item.quantidade),
-        unidade: item.unidade ?? "kg",
-        observacao: obsItens[item.id],
-      }));
-      const result = await finalizarRecebimento(pedidoConferencia.id, itens, obsGeralRecebimento || null);
+      const result = await finalizarRecebimento(
+        pedidoConferencia.id,
+        buildItensPayload(),
+        obsGeralRecebimento || null,
+        assinaturaNome.trim(),
+      );
       if (result.ok) {
         setRecebidosLocal((prev) => [...prev, pedidoConferencia.id]);
         handleVoltarRecebimento();
@@ -304,6 +355,48 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
         router.refresh();
       } else { toast.error(result.error); }
     });
+  }
+
+  function handlePdfRecebimento(p: PedidoParaRecebimento) {
+    const rec = p.recebimento;
+    if (!rec) return;
+    const itens = rec.recebimento_itens;
+    const pendentes = itens.filter((i) => i.status !== "ok");
+    const isIntegral = pendentes.length === 0;
+
+    // Agrupa por categoria
+    const groups = new Map<string, typeof itens>();
+    for (const ri of itens) {
+      const cat = produtosPorNome.get(ri.nome)?.categoria ?? "";
+      const label = (LABEL_MAP[cat] ?? cat) || "Outros";
+      if (!groups.has(label)) groups.set(label, []);
+      groups.get(label)!.push(ri);
+    }
+
+    const statusLabel = (s: string) =>
+      s === "ok" ? "✓ OK" : s === "parcial" ? "⚠ Parcial" : "✗ Não recebido";
+
+    let categoriesHtml = "";
+    for (const [cat, catItens] of groups) {
+      const rows = catItens.map((i) =>
+        `<tr><td>${i.nome}</td><td>${i.quantidade_pedida} ${i.unidade ?? ""}</td><td>${i.quantidade_recebida} ${i.unidade ?? ""}</td><td class="st-${i.status}">${statusLabel(i.status)}</td><td>${i.observacao ?? ""}</td></tr>`
+      ).join("");
+      categoriesHtml += `<div class="cat"><div class="cat-title">${cat}</div><table><thead><tr><th>Item</th><th>Pedido</th><th>Recebido</th><th>Status</th><th>Obs</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    }
+
+    const pendentesHtml = !isIntegral ? `<div class="section"><h2>ITENS PENDENTES</h2><table><thead><tr><th>Item</th><th>Pedido</th><th>Recebido</th><th>Diferença</th><th>Obs</th></tr></thead><tbody>${pendentes.map((i) => {
+      const dif = i.quantidade_recebida - i.quantidade_pedida;
+      return `<tr><td>${i.nome}</td><td>${i.quantidade_pedida} ${i.unidade ?? ""}</td><td>${i.quantidade_recebida} ${i.unidade ?? ""}</td><td class="st-nao_recebido">${dif > 0 ? "+" : ""}${dif} ${i.unidade ?? ""}</td><td>${i.observacao ?? ""}</td></tr>`;
+    }).join("")}</tbody></table></div>` : "";
+
+    const statusGlobal = isIntegral
+      ? `<div class="status-ok">✓ PEDIDO RECEBIDO INTEGRALMENTE</div>`
+      : `<div class="status-parcial">⚠ RECEBIMENTO PARCIAL — ${pendentes.length} ${pendentes.length === 1 ? "item pendente" : "itens pendentes"}</div>`;
+
+    const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><title>Recebimento – ${unit.name}</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;padding:32px;color:#111;font-size:13px}h1{font-size:20px;font-weight:800;margin-bottom:4px}.sub{font-size:12px;color:#555;margin-bottom:20px}.meta-table{border-collapse:collapse;margin-bottom:20px;font-size:13px}.meta-table td{padding:4px 16px 4px 0}.meta-table td:first-child{font-weight:600;color:#555;white-space:nowrap}hr{border:none;border-top:2px solid #111;margin:0 0 24px}.section{margin-bottom:28px}h2{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:#333;border-bottom:1px solid #ddd;padding-bottom:6px;margin-bottom:10px}.cat{margin-bottom:20px}.cat-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#333;padding-bottom:6px;border-bottom:1px solid #ddd;margin-bottom:8px}table{width:100%;border-collapse:collapse}th{text-align:left;font-size:10px;font-weight:700;color:#888;text-transform:uppercase;padding:3px 6px;border-bottom:1px solid #eee}td{padding:5px 6px;border-bottom:1px solid #f0f0f0;font-size:12px}.st-ok{color:#15803D;font-weight:700}.st-parcial{color:#92400E;font-weight:700}.st-nao_recebido{color:#7F1D1D;font-weight:700}.status-ok{background:#DCFCE7;border:1px solid #BBF7D0;border-radius:6px;padding:12px 16px;font-size:13px;font-weight:700;color:#15803D;margin-bottom:20px}.status-parcial{background:#FEF3C7;border:1px solid #FDE68A;border-radius:6px;padding:12px 16px;font-size:13px;font-weight:700;color:#92400E;margin-bottom:20px}.assinatura{margin-top:40px;border-top:1px solid #ddd;padding-top:20px}.assinatura .linha{border-bottom:1px solid #111;width:260px;height:24px;margin-bottom:4px}.assinatura .nome{font-size:12px;font-weight:700;color:#333}.assinatura .data{font-size:11px;color:#666;margin-top:4px}.footer-pdf{margin-top:32px;font-size:10px;color:#aaa;text-align:right;border-top:1px solid #eee;padding-top:8px}@media print{@page{margin:16mm}}</style></head><body><h1>RELATÓRIO DE RECEBIMENTO</h1><div class="sub">${unit.name}</div><hr><table class="meta-table"><tr><td>Pedido #</td><td>${p.id.slice(0, 8).toUpperCase()}</td></tr><tr><td>Data do pedido</td><td>${formatDateTime(p.data_pedido)}</td></tr><tr><td>Data do recebimento</td><td>${formatDateTime(rec.created_at)}</td></tr><tr><td>Recebido por</td><td>${rec.assinatura_nome ?? "—"}</td></tr></table><div class="section"><h2>Itens por categoria</h2>${categoriesHtml}</div>${pendentesHtml}${statusGlobal}<div class="assinatura"><div class="linha"></div><div class="nome">${rec.assinatura_nome ?? ""}</div><div class="data">Data: ${formatDateTime(rec.created_at)}</div></div><div class="footer-pdf">Gerado via KPH-OS</div></body></html>`;
+
+    const win = window.open("", "_blank", "width=820,height=680");
+    if (win) { win.document.write(html); win.document.close(); win.print(); }
   }
 
   // ── Derivados inline ──
@@ -333,82 +426,53 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
 
   return (
     <div>
-      {/* ══ WRAPPER 100DVH (tabs + conteúdo) ════════════════════════════════ */}
+      {/* ══ WRAPPER 100DVH ══════════════════════════════════════════════════ */}
       <div style={{ height: "100dvh", display: "flex", flexDirection: "column", overflow: "hidden" }}>
 
-        {/* ABAS ─────────────────────────────────────────────────────────── */}
+        {/* ABAS */}
         <nav style={{ flexShrink: 0, display: "flex", borderBottom: "1px solid var(--border)", background: "var(--surface)" }}>
           {(["pedidos", "recebimento"] as const).map((aba) => (
-            <button
-              key={aba}
-              type="button"
-              onClick={() => setAbaAtiva(aba)}
-              style={{
-                flex: 1, height: 48, border: "none",
-                borderBottom: abaAtiva === aba ? "2px solid var(--brand)" : "2px solid transparent",
-                background: "none",
-                color: abaAtiva === aba ? "var(--text)" : "var(--text-3)",
-                fontWeight: abaAtiva === aba ? 700 : 500,
-                fontSize: 14, cursor: "pointer",
-                display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
-              }}
-            >
+            <button key={aba} type="button" onClick={() => setAbaAtiva(aba)}
+              style={{ flex: 1, height: 48, border: "none", borderBottom: abaAtiva === aba ? "2px solid var(--brand)" : "2px solid transparent", background: "none", color: abaAtiva === aba ? "var(--text)" : "var(--text-3)", fontWeight: abaAtiva === aba ? 700 : 500, fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
               {aba === "pedidos" ? "📋 Pedidos" : "📦 Recebimento"}
             </button>
           ))}
         </nav>
 
-        {/* CONTEÚDO DAS ABAS ────────────────────────────────────────────── */}
+        {/* CONTEÚDO DAS ABAS */}
         <div style={{ flex: 1, overflow: "hidden" }}>
 
-          {/* ── ABA PEDIDOS ────────────────────────────────────────────── */}
+          {/* ── ABA PEDIDOS ──────────────────────────────────────────────── */}
           {abaAtiva === "pedidos" && (
             <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
-
-              {/* Header busca + carrinho */}
               <header style={{ height: 64, flexShrink: 0, display: "flex", alignItems: "center", gap: 12, padding: "0 16px", borderBottom: "1px solid var(--border)", background: "var(--surface)" }}>
-                <input
-                  type="search"
-                  placeholder="Buscar produto…"
-                  value={busca}
-                  onChange={(e) => setBusca(e.target.value)}
-                  style={{ flex: 1, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 10, color: "var(--text)", fontSize: 15, padding: "10px 14px", outline: "none" }}
-                />
-                <button
-                  type="button"
-                  onClick={() => setCarrinhoAberto(true)}
-                  style={{ display: "flex", alignItems: "center", gap: 8, height: 44, background: totalItens > 0 ? "var(--brand)" : "var(--surface-2)", color: totalItens > 0 ? "#fff" : "var(--text-2)", border: "1px solid var(--border)", borderRadius: 10, padding: "0 16px", fontSize: 14, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 }}
-                >
+                <input type="search" placeholder="Buscar produto…" value={busca} onChange={(e) => setBusca(e.target.value)}
+                  style={{ flex: 1, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 10, color: "var(--text)", fontSize: 15, padding: "10px 14px", outline: "none" }} />
+                <button type="button" onClick={() => setCarrinhoAberto(true)}
+                  style={{ display: "flex", alignItems: "center", gap: 8, height: 44, background: totalItens > 0 ? "var(--brand)" : "var(--surface-2)", color: totalItens > 0 ? "#fff" : "var(--text-2)", border: "1px solid var(--border)", borderRadius: 10, padding: "0 16px", fontSize: 14, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 }}>
                   <ShoppingBag size={18} />
                   {totalItens > 0 ? `Carrinho (${totalItens})` : "Carrinho"}
                 </button>
               </header>
 
-              {/* Conteúdo central: categorias + produtos */}
               <div style={{ flex: 1, overflow: "hidden", display: "flex" }}>
-
-                {/* Coluna esquerda — Categorias */}
+                {/* Categorias */}
                 <nav style={{ width: 160, flexShrink: 0, overflowY: "auto", borderRight: "1px solid var(--border)", background: "var(--surface)", padding: "8px 6px" }}>
                   {categorias.length === 0 ? (
                     <div style={{ padding: 12, color: "var(--text-3)", fontSize: 12, textAlign: "center" }}>Nenhum produto.</div>
-                  ) : (
-                    categorias.map((cat) => {
-                      const isActive = cat === categoriaAtiva;
-                      return (
-                        <button key={cat} type="button" onClick={() => handleCategoriaChange(cat)}
-                          style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4, width: "100%", minHeight: 72, padding: "10px 8px", marginBottom: 4, background: isActive ? "var(--brand)" : "var(--surface-2)", border: "none", borderRadius: 10, color: isActive ? "#fff" : "var(--text-2)", cursor: "pointer", textAlign: "center" }}
-                        >
-                          <span style={{ fontSize: 28, lineHeight: 1 }}>{getCatEmoji(cat)}</span>
-                          <span style={{ fontSize: 11, fontWeight: 600, lineHeight: 1.3, whiteSpace: "normal", wordBreak: "break-word" }}>
-                            {LABEL_MAP[cat] ?? cat}
-                          </span>
-                        </button>
-                      );
-                    })
-                  )}
+                  ) : categorias.map((cat) => {
+                    const isActive = cat === categoriaAtiva;
+                    return (
+                      <button key={cat} type="button" onClick={() => handleCategoriaChange(cat)}
+                        style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4, width: "100%", minHeight: 72, padding: "10px 8px", marginBottom: 4, background: isActive ? "var(--brand)" : "var(--surface-2)", border: "none", borderRadius: 10, color: isActive ? "#fff" : "var(--text-2)", cursor: "pointer", textAlign: "center" }}>
+                        <span style={{ fontSize: 28, lineHeight: 1 }}>{getCatEmoji(cat)}</span>
+                        <span style={{ fontSize: 11, fontWeight: 600, lineHeight: 1.3, whiteSpace: "normal", wordBreak: "break-word" }}>{LABEL_MAP[cat] ?? cat}</span>
+                      </button>
+                    );
+                  })}
                 </nav>
 
-                {/* Coluna direita — Produtos */}
+                {/* Produtos */}
                 <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px" }}>
                   {!categoriaAtiva && busca.trim() === "" ? (
                     <div style={{ color: "var(--text-3)", fontSize: 14, textAlign: "center", paddingTop: 48 }}>Selecione uma categoria.</div>
@@ -449,7 +513,6 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
                 </div>
               </div>
 
-              {/* Footer enviar pedido */}
               <footer style={{ height: 72, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, padding: "0 16px", borderTop: "1px solid var(--border)", background: "var(--surface)" }}>
                 <span style={{ fontSize: 13, color: totalItens > 0 ? "var(--text-2)" : "var(--text-3)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{footerResumo}</span>
                 <button type="button" onClick={handleEnviar} disabled={totalItens === 0 || isPending}
@@ -460,161 +523,213 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
             </div>
           )}
 
-          {/* ── ABA RECEBIMENTO ────────────────────────────────────────── */}
+          {/* ── ABA RECEBIMENTO ──────────────────────────────────────────── */}
           {abaAtiva === "recebimento" && (
             <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
 
-              {pedidoConferencia ? (
-                // ── TELA DE CONFERÊNCIA ──────────────────────────────────
-                <>
-                  {/* Header conferência */}
-                  <header style={{ height: 64, flexShrink: 0, display: "flex", alignItems: "center", gap: 12, padding: "0 16px", borderBottom: "1px solid var(--border)", background: "var(--surface)" }}>
-                    <button type="button" onClick={handleVoltarRecebimento}
-                      style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text-2)", padding: "8px 12px", fontSize: 13, fontWeight: 600, cursor: "pointer", flexShrink: 0 }}>
-                      <ArrowLeft size={15} /> Voltar
-                    </button>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text)" }}>
-                        {pedidoConferencia.recebimento ? "Recebimento anterior" : "Recebendo:"} {formatDateTime(pedidoConferencia.data_pedido)}
-                      </div>
-                      <div style={{ fontSize: 11, color: "var(--text-3)" }}>
-                        {pedidoConferencia.purchase_order_items.length} itens · {unit.name}
-                      </div>
-                    </div>
-                    {pedidoConferencia.recebimento && (
-                      <span style={{ fontSize: 11, fontWeight: 700, background: "#15803D", color: "#fff", borderRadius: 99, padding: "3px 10px", flexShrink: 0 }}>
-                        ✓ Recebido em {formatDateTime(pedidoConferencia.recebimento.created_at)}
-                      </span>
-                    )}
-                  </header>
+              {pedidoConferencia ? (() => {
+                const rec = pedidoConferencia.recebimento;
+                const isFinalizado = rec?.status === "finalizado";
+                const isRascunho = rec?.status === "rascunho";
+                const isEditMode = !isFinalizado;
 
-                  {/* Corpo — itens */}
-                  <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px" }}>
-                    {pedidoConferencia.recebimento ? (
-                      // Modo somente leitura
-                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                        {pedidoConferencia.recebimento.recebimento_itens.map((ri) => {
-                          const conf = STATUS_CONF[ri.status as keyof typeof STATUS_CONF] ?? STATUS_CONF.ok;
-                          return (
-                            <div key={ri.id}
-                              style={{ padding: "14px 16px", background: "var(--surface)", border: "1px solid var(--border)", borderLeft: `3px solid ${conf.border}`, borderRadius: 10 }}>
-                              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
-                                <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>{ri.nome}</span>
-                                <span style={{ fontSize: 12, color: "var(--text-3)" }}>{conf.emoji} {conf.label}</span>
-                              </div>
-                              <div style={{ fontSize: 12, color: "var(--text-3)" }}>
-                                Pedido: {ri.quantidade_pedida} {ri.unidade ?? ""} · Recebido: {ri.quantidade_recebida} {ri.unidade ?? ""}
-                              </div>
-                              {ri.observacao && (
-                                <div style={{ fontSize: 11, color: "var(--text-3)", fontStyle: "italic", marginTop: 4 }}>{ri.observacao}</div>
-                              )}
-                            </div>
-                          );
-                        })}
-                        {pedidoConferencia.recebimento.observacao && (
-                          <div style={{ marginTop: 8, background: "var(--surface-2)", border: "1px solid var(--border)", borderLeft: "3px solid var(--text-3)", borderRadius: 6, padding: "10px 12px", fontSize: 13, color: "var(--text-3)", fontStyle: "italic" }}>
-                            Obs geral: {pedidoConferencia.recebimento.observacao}
+                return (
+                  <>
+                    {/* Header conferência */}
+                    <header style={{ flexShrink: 0, display: "flex", alignItems: "flex-start", gap: 12, padding: "12px 16px", borderBottom: "1px solid var(--border)", background: "var(--surface)", minHeight: 64 }}>
+                      <button type="button" onClick={handleVoltarRecebimento}
+                        style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text-2)", padding: "8px 12px", fontSize: 13, fontWeight: 600, cursor: "pointer", flexShrink: 0, marginTop: 2 }}>
+                        <ArrowLeft size={15} /> Voltar
+                      </button>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text)" }}>
+                          {isFinalizado
+                            ? `Finalizado em ${formatDateTime(rec?.created_at)}`
+                            : `Recebendo: ${formatDateTime(pedidoConferencia.data_pedido)}`}
+                        </div>
+                        <div style={{ fontSize: 11, color: "var(--text-3)", marginTop: 2 }}>
+                          {isFinalizado
+                            ? `Recebido por: ${rec?.assinatura_nome ?? "—"}`
+                            : `${pedidoConferencia.purchase_order_items.length} itens · ${unit.name}`}
+                        </div>
+                        {isRascunho && (
+                          <div style={{ fontSize: 11, color: "#F59E0B", marginTop: 3, fontWeight: 600 }}>
+                            🟠 Rascunho salvo em {rascunhoSalvoEm ?? formatDateTime(rec?.created_at)}
+                          </div>
+                        )}
+                        {!isRascunho && rascunhoSalvoEm && (
+                          <div style={{ fontSize: 11, color: "#F59E0B", marginTop: 3, fontWeight: 600 }}>
+                            🟠 Rascunho salvo às {rascunhoSalvoEm}
                           </div>
                         )}
                       </div>
-                    ) : (
-                      // Modo edição
-                      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                        {Array.from(groupItemsByCategoria(pedidoConferencia.purchase_order_items, produtosPorNome)).map(([cat, items]) => (
-                          <div key={cat}>
-                            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: 0.7, paddingBottom: 6, marginBottom: 8, borderBottom: "1px solid var(--border)" }}>
-                              {cat} ({items.length})
+                      {isFinalizado && (
+                        <button type="button" onClick={() => handlePdfRecebimento(pedidoConferencia)}
+                          style={{ display: "flex", alignItems: "center", gap: 6, height: 36, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text-2)", padding: "0 12px", fontSize: 12, fontWeight: 600, cursor: "pointer", flexShrink: 0 }}>
+                          📄 Relatório PDF
+                        </button>
+                      )}
+                    </header>
+
+                    {/* Corpo */}
+                    <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px" }}>
+                      {isFinalizado && rec ? (
+                        // ── Modo somente leitura ──
+                        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                          {rec.recebimento_itens.map((ri) => {
+                            const conf = STATUS_CONF[ri.status as keyof typeof STATUS_CONF] ?? STATUS_CONF.ok;
+                            return (
+                              <div key={ri.id} style={{ padding: "14px 16px", background: "var(--surface)", border: "1px solid var(--border)", borderLeft: `3px solid ${conf.border}`, borderRadius: 10 }}>
+                                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+                                  <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>{ri.nome}</span>
+                                  <span style={{ fontSize: 12, color: "var(--text-3)" }}>{conf.emoji} {conf.label}</span>
+                                </div>
+                                <div style={{ fontSize: 12, color: "var(--text-3)" }}>
+                                  Pedido: {ri.quantidade_pedida} {ri.unidade ?? ""} · Recebido: {ri.quantidade_recebida} {ri.unidade ?? ""}
+                                </div>
+                                {ri.observacao && (
+                                  <div style={{ fontSize: 11, color: "var(--text-3)", fontStyle: "italic", marginTop: 4 }}>{ri.observacao}</div>
+                                )}
+                              </div>
+                            );
+                          })}
+                          {rec.observacao && (
+                            <div style={{ marginTop: 8, background: "var(--surface-2)", border: "1px solid var(--border)", borderLeft: "3px solid var(--text-3)", borderRadius: 6, padding: "10px 12px", fontSize: 13, color: "var(--text-3)", fontStyle: "italic" }}>
+                              Obs geral: {rec.observacao}
                             </div>
-                            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                              {items.map((item: PurchaseOrderItemRow) => {
-                                const qtdPedida = Number(item.quantidade);
-                                const qtdRec = qtdsRecebidas[item.id] ?? qtdPedida;
-                                const status = getItemStatus(item.id, qtdPedida);
-                                const conf = STATUS_CONF[status];
-                                const catProd = produtosPorNome.get(item.nome)?.categoria ?? "";
-                                return (
-                                  <div key={item.id}
-                                    style={{ padding: "14px 16px", background: "var(--surface)", border: "1px solid var(--border)", borderLeft: `3px solid ${conf.border}`, borderRadius: 10, display: "flex", flexDirection: "column", gap: 8, minHeight: 80 }}>
-                                    <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
-                                      <div>
-                                        <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text)", textTransform: "uppercase", letterSpacing: 0.2 }}>{item.nome}</div>
-                                        <div style={{ fontSize: 11, color: "var(--text-3)", marginTop: 2 }}>{LABEL_MAP[catProd] ?? catProd}</div>
-                                        <div style={{ fontSize: 12, color: "var(--text-3)", marginTop: 4 }}>Pedido: {qtdPedida} {item.unidade ?? ""}</div>
+                          )}
+                        </div>
+                      ) : (
+                        // ── Modo edição ──
+                        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                          {Array.from(groupItemsByCategoria(pedidoConferencia.purchase_order_items, produtosPorNome)).map(([cat, items]) => (
+                            <div key={cat}>
+                              <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: 0.7, paddingBottom: 6, marginBottom: 8, borderBottom: "1px solid var(--border)" }}>
+                                {cat} ({items.length})
+                              </div>
+                              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                                {items.map((item: PurchaseOrderItemRow) => {
+                                  const qtdPedida = Number(item.quantidade);
+                                  const qtdRec = qtdsRecebidas[item.id] ?? qtdPedida;
+                                  const status = getItemStatus(item.id, qtdPedida);
+                                  const conf = STATUS_CONF[status];
+                                  const catProd = produtosPorNome.get(item.nome)?.categoria ?? "";
+                                  return (
+                                    <div key={item.id} style={{ padding: "14px 16px", background: "var(--surface)", border: "1px solid var(--border)", borderLeft: `3px solid ${conf.border}`, borderRadius: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+                                      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
+                                        <div>
+                                          <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text)", textTransform: "uppercase", letterSpacing: 0.2 }}>{item.nome}</div>
+                                          <div style={{ fontSize: 11, color: "var(--text-3)", marginTop: 2 }}>{LABEL_MAP[catProd] ?? catProd}</div>
+                                          <div style={{ fontSize: 12, color: "var(--text-3)", marginTop: 4 }}>Pedido: {qtdPedida} {item.unidade ?? ""}</div>
+                                        </div>
+                                        <span style={{ fontSize: 12, color: "var(--text-2)", flexShrink: 0 }}>{conf.emoji} {conf.label}</span>
                                       </div>
-                                      <span style={{ fontSize: 12, color: "var(--text-2)", flexShrink: 0 }}>{conf.emoji} {conf.label}</span>
+                                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                        <span style={{ fontSize: 12, color: "var(--text-3)", flexShrink: 0 }}>Recebido:</span>
+                                        <button type="button"
+                                          onClick={() => setQtdsRecebidas((p) => ({ ...p, [item.id]: Math.max(0, (p[item.id] ?? qtdPedida) - 1) }))}
+                                          disabled={qtdRec <= 0}
+                                          style={{ width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid var(--border)", borderRadius: 8, background: "var(--surface-2)", color: "var(--text)", fontSize: 20, fontWeight: 700, cursor: qtdRec <= 0 ? "not-allowed" : "pointer", opacity: qtdRec <= 0 ? 0.3 : 1 }}>−</button>
+                                        <input type="number" inputMode="decimal" min="0" step="any" value={qtdRec === 0 ? "" : qtdRec} placeholder="0"
+                                          onChange={(e) => { const n = parseFloat(e.target.value); setQtdsRecebidas((p) => ({ ...p, [item.id]: isNaN(n) || n < 0 ? 0 : n })); }}
+                                          style={{ width: 60, height: 44, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", fontSize: 16, fontWeight: 700, textAlign: "center", outline: "none", padding: "0 4px" }} />
+                                        <button type="button"
+                                          onClick={() => setQtdsRecebidas((p) => ({ ...p, [item.id]: (p[item.id] ?? qtdPedida) + 1 }))}
+                                          style={{ width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid var(--border)", borderRadius: 8, background: "var(--surface-2)", color: "var(--text)", fontSize: 20, fontWeight: 700, cursor: "pointer" }}>+</button>
+                                        <span style={{ fontSize: 12, color: "var(--text-3)" }}>{item.unidade ?? ""}</span>
+                                      </div>
+                                      <input type="text" placeholder="Obs: ex: chegou amassado…"
+                                        value={obsItens[item.id] ?? ""}
+                                        onChange={(e) => setObsItens((p) => ({ ...p, [item.id]: e.target.value }))}
+                                        style={{ background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text)", fontSize: 12, padding: "7px 10px", outline: "none", width: "100%" }} />
                                     </div>
-                                    {/* Controles ± */}
-                                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                                      <span style={{ fontSize: 12, color: "var(--text-3)", flexShrink: 0 }}>Recebido:</span>
-                                      <button type="button"
-                                        onClick={() => setQtdsRecebidas((p) => ({ ...p, [item.id]: Math.max(0, (p[item.id] ?? qtdPedida) - 1) }))}
-                                        disabled={qtdRec <= 0}
-                                        style={{ width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid var(--border)", borderRadius: 8, background: "var(--surface-2)", color: "var(--text)", fontSize: 20, fontWeight: 700, cursor: qtdRec <= 0 ? "not-allowed" : "pointer", opacity: qtdRec <= 0 ? 0.3 : 1 }}>−</button>
-                                      <input type="number" inputMode="decimal" min="0" step="any" value={qtdRec === 0 ? "" : qtdRec} placeholder="0"
-                                        onChange={(e) => { const n = parseFloat(e.target.value); setQtdsRecebidas((p) => ({ ...p, [item.id]: isNaN(n) || n < 0 ? 0 : n })); }}
-                                        style={{ width: 60, height: 44, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", fontSize: 16, fontWeight: 700, textAlign: "center", outline: "none", padding: "0 4px" }} />
-                                      <button type="button"
-                                        onClick={() => setQtdsRecebidas((p) => ({ ...p, [item.id]: (p[item.id] ?? qtdPedida) + 1 }))}
-                                        style={{ width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid var(--border)", borderRadius: 8, background: "var(--surface-2)", color: "var(--text)", fontSize: 20, fontWeight: 700, cursor: "pointer" }}>+</button>
-                                      <span style={{ fontSize: 12, color: "var(--text-3)" }}>{item.unidade ?? ""}</span>
-                                    </div>
-                                    {/* Obs por item */}
-                                    <input type="text"
-                                      placeholder="Obs: ex: chegou amassado…"
-                                      value={obsItens[item.id] ?? ""}
-                                      onChange={(e) => setObsItens((p) => ({ ...p, [item.id]: e.target.value }))}
-                                      style={{ background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text)", fontSize: 12, padding: "7px 10px", outline: "none", width: "100%" }} />
-                                  </div>
-                                );
-                              })}
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ))}
+                          <div style={{ marginTop: 4 }}>
+                            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: 0.7, marginBottom: 6 }}>Observação geral</div>
+                            <textarea rows={2} placeholder="Observações do recebimento (opcional)…"
+                              value={obsGeralRecebimento}
+                              onChange={(e) => setObsGeralRecebimento(e.target.value)}
+                              style={{ width: "100%", background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", fontSize: 13, padding: "10px 12px", outline: "none", resize: "vertical", boxSizing: "border-box" }} />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Footer + modal inline — só em modo edição */}
+                    {isEditMode && conferenceSummary && (
+                      <>
+                        {/* Modal inline de assinatura */}
+                        {isFinalizarModalAberto && (
+                          <div style={{ flexShrink: 0, padding: "14px 16px", borderTop: "1px solid var(--border)", background: "var(--surface-2)" }}>
+                            <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-2)", marginBottom: 8 }}>Nome de quem recebeu *</div>
+                            <input
+                              type="text"
+                              placeholder="Digite seu nome completo"
+                              value={assinaturaNome}
+                              onChange={(e) => setAssinaturaNome(e.target.value)}
+                              autoFocus
+                              style={{ width: "100%", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", fontSize: 14, padding: "10px 12px", outline: "none", marginBottom: 10, boxSizing: "border-box" }}
+                            />
+                            <div style={{ display: "flex", gap: 8 }}>
+                              <button type="button" onClick={() => setIsFinalizarModalAberto(false)}
+                                style={{ flex: 1, height: 44, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text-2)", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
+                                Cancelar
+                              </button>
+                              <button type="button"
+                                onClick={handleFinalizarRecebimento}
+                                disabled={assinaturaNome.trim().length === 0 || isRecebendoPending}
+                                style={{ flex: 2, height: 44, background: "#22C55E", color: "#fff", border: "none", borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: assinaturaNome.trim().length === 0 || isRecebendoPending ? "not-allowed" : "pointer", opacity: assinaturaNome.trim().length === 0 || isRecebendoPending ? 0.5 : 1 }}>
+                                {isRecebendoPending ? "Finalizando…" : "Confirmar e finalizar"}
+                              </button>
                             </div>
                           </div>
-                        ))}
+                        )}
 
-                        {/* Obs geral */}
-                        <div style={{ marginTop: 4 }}>
-                          <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: 0.7, marginBottom: 6 }}>Observação geral</div>
-                          <textarea rows={2} placeholder="Observações do recebimento (opcional)…"
-                            value={obsGeralRecebimento}
-                            onChange={(e) => setObsGeralRecebimento(e.target.value)}
-                            style={{ width: "100%", background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", fontSize: 13, padding: "10px 12px", outline: "none", resize: "vertical", boxSizing: "border-box" }} />
-                        </div>
-                      </div>
+                        {/* Footer com dois botões */}
+                        <footer style={{ flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 16px", borderTop: "1px solid var(--border)", background: "var(--surface)" }}>
+                          <span style={{ fontSize: 12, color: "var(--text-3)", flexShrink: 0 }}>
+                            🟢 {conferenceSummary.ok} · 🟡 {conferenceSummary.parcial} · 🔴 {conferenceSummary.nao_recebido}
+                          </span>
+                          <div style={{ display: "flex", gap: 8 }}>
+                            <button type="button" onClick={handleSalvarRascunho} disabled={isSalvandoPending}
+                              style={{ height: 48, padding: "0 16px", background: "var(--surface-2)", color: "var(--text-2)", border: "1px solid var(--border)", borderRadius: 10, fontSize: 13, fontWeight: 600, cursor: isSalvandoPending ? "not-allowed" : "pointer", opacity: isSalvandoPending ? 0.6 : 1, whiteSpace: "nowrap" }}>
+                              {isSalvandoPending ? "Salvando…" : "Salvar rascunho"}
+                            </button>
+                            <button type="button"
+                              onClick={() => setIsFinalizarModalAberto((prev) => !prev)}
+                              disabled={isFinalizarModalAberto}
+                              style={{ height: 48, padding: "0 20px", background: "#22C55E", color: "#fff", border: "none", borderRadius: 10, fontSize: 14, fontWeight: 700, cursor: isFinalizarModalAberto ? "default" : "pointer", whiteSpace: "nowrap" }}>
+                              Finalizar →
+                            </button>
+                          </div>
+                        </footer>
+                      </>
                     )}
-                  </div>
+                  </>
+                );
+              })() : (
+                // ── LISTA DE PEDIDOS ────────────────────────────────────────
+                <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px", display: "flex", flexDirection: "column", gap: 24 }}>
 
-                  {/* Footer conferência — só em modo edição */}
-                  {!pedidoConferencia.recebimento && conferenceSummary && (
-                    <footer style={{ flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, padding: "12px 16px", borderTop: "1px solid var(--border)", background: "var(--surface)" }}>
-                      <span style={{ fontSize: 13, color: "var(--text-3)" }}>
-                        🟢 {conferenceSummary.ok} ok · 🟡 {conferenceSummary.parcial} parciais · 🔴 {conferenceSummary.nao_recebido} não recebidos
-                      </span>
-                      <button type="button" onClick={handleFinalizarRecebimento} disabled={isRecebendoPending}
-                        style={{ height: 52, minWidth: 200, background: "#22C55E", color: "#fff", border: "none", borderRadius: 10, padding: "0 24px", fontSize: 15, fontWeight: 700, cursor: isRecebendoPending ? "not-allowed" : "pointer", opacity: isRecebendoPending ? 0.6 : 1, flexShrink: 0 }}>
-                        {isRecebendoPending ? "Finalizando…" : "Finalizar Recebimento"}
-                      </button>
-                    </footer>
-                  )}
-                </>
-              ) : (
-                // ── LISTA DE PEDIDOS PARA RECEBER ──────────────────────
-                <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px" }}>
-                  {pedidosRecebimentoOrdenados.length === 0 ? (
-                    <div style={{ color: "var(--text-3)", fontSize: 13, textAlign: "center", paddingTop: 48 }}>Nenhum pedido encontrado.</div>
-                  ) : (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                      {pedidosRecebimentoOrdenados.map((p) => {
-                        const jaRecebido = p.recebimento !== null || recebidosLocal.includes(p.id);
-                        return (
+                  {/* Grupo: Em andamento */}
+                  {pedidosEmAndamento.length > 0 && (
+                    <div>
+                      <div style={{ fontSize: 11, fontWeight: 800, color: "#F59E0B", textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+                        🟠 Em andamento ({pedidosEmAndamento.length})
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                        {pedidosEmAndamento.map((p) => (
                           <div key={p.id} onClick={() => handleSelecionarPedido(p)}
-                            style={{ padding: "14px 16px", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, cursor: "pointer", display: "flex", alignItems: "center", gap: 12, opacity: jaRecebido ? 0.65 : 1 }}>
+                            style={{ padding: "14px 16px", background: "var(--surface)", border: "1px solid #F59E0B", borderLeft: "3px solid #F59E0B", borderRadius: 10, cursor: "pointer", display: "flex", alignItems: "center", gap: 12 }}>
                             <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
                               <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                                 <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>{formatDateTime(p.data_pedido)}</span>
                                 <StatusBadge status={p.status} />
-                                {jaRecebido && (
-                                  <span style={{ fontSize: 11, fontWeight: 700, background: "#15803D", color: "#fff", borderRadius: 99, padding: "2px 8px" }}>✓ Recebido</span>
-                                )}
+                                <span style={{ fontSize: 11, fontWeight: 700, background: "#92400E", color: "#FDE68A", borderRadius: 99, padding: "2px 8px" }}>🟠 Rascunho</span>
                               </div>
                               <span style={{ fontSize: 12, color: "var(--text-3)" }}>
                                 {p.purchase_order_items.length} {p.purchase_order_items.length === 1 ? "item" : "itens"}
@@ -622,9 +737,66 @@ export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRece
                             </div>
                             <ChevronRight size={18} style={{ color: "var(--text-3)", flexShrink: 0 }} />
                           </div>
-                        );
-                      })}
+                        ))}
+                      </div>
                     </div>
+                  )}
+
+                  {/* Grupo: Aguardando recebimento */}
+                  {pedidosAguardando.length > 0 && (
+                    <div>
+                      <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 8 }}>
+                        Aguardando recebimento ({pedidosAguardando.length})
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                        {pedidosAguardando.map((p) => (
+                          <div key={p.id} onClick={() => handleSelecionarPedido(p)}
+                            style={{ padding: "14px 16px", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, cursor: "pointer", display: "flex", alignItems: "center", gap: 12 }}>
+                            <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                                <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>{formatDateTime(p.data_pedido)}</span>
+                                <StatusBadge status={p.status} />
+                              </div>
+                              <span style={{ fontSize: 12, color: "var(--text-3)" }}>
+                                {p.purchase_order_items.length} {p.purchase_order_items.length === 1 ? "item" : "itens"}
+                              </span>
+                            </div>
+                            <ChevronRight size={18} style={{ color: "var(--text-3)", flexShrink: 0 }} />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Grupo: Finalizados */}
+                  {pedidosFinalizados.length > 0 && (
+                    <div>
+                      <div style={{ fontSize: 11, fontWeight: 800, color: "#15803D", textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 8 }}>
+                        ✓ Finalizados ({pedidosFinalizados.length})
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                        {pedidosFinalizados.map((p) => (
+                          <div key={p.id} onClick={() => handleSelecionarPedido(p)}
+                            style={{ padding: "14px 16px", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, cursor: "pointer", display: "flex", alignItems: "center", gap: 12, opacity: 0.65 }}>
+                            <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                                <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>{formatDateTime(p.data_pedido)}</span>
+                                <StatusBadge status={p.status} />
+                                <span style={{ fontSize: 11, fontWeight: 700, background: "#15803D", color: "#fff", borderRadius: 99, padding: "2px 8px" }}>✓ Recebido</span>
+                              </div>
+                              {p.recebimento?.assinatura_nome && (
+                                <span style={{ fontSize: 12, color: "var(--text-3)" }}>Recebido por: {p.recebimento.assinatura_nome}</span>
+                              )}
+                            </div>
+                            <ChevronRight size={18} style={{ color: "var(--text-3)", flexShrink: 0 }} />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {pedidosEmAndamento.length === 0 && pedidosAguardando.length === 0 && pedidosFinalizados.length === 0 && (
+                    <div style={{ color: "var(--text-3)", fontSize: 13, textAlign: "center", paddingTop: 48 }}>Nenhum pedido encontrado.</div>
                   )}
                 </div>
               )}

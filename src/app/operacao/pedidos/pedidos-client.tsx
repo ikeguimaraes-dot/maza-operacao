@@ -3,13 +3,18 @@
 import { Fragment, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { ShoppingBag, X, ChevronDown, ChevronRight } from "lucide-react";
+import { ShoppingBag, X, ChevronDown, ChevronRight, ArrowLeft } from "lucide-react";
 import { formatDateBR } from "@/lib/format";
 import type { PurchaseOrderItemRow, PurchaseOrderStatus } from "@kph/db/types/database";
-import { criarPedido, deletarPedido } from "./actions";
-import type { ProdutoCatalogo, PedidoComItens } from "./actions";
+import { criarPedido, deletarPedido, finalizarRecebimento } from "./actions";
+import type {
+  ProdutoCatalogo,
+  PedidoComItens,
+  PedidoParaRecebimento,
+  RecebimentoItemInput,
+} from "./actions";
 
-// ── Mapeamento de labels ─────────────────────────────────────────────────────
+// ── Constantes e helpers ─────────────────────────────────────────────────────
 
 const LABEL_MAP: Record<string, string> = {
   proteina: "Proteína",
@@ -30,6 +35,12 @@ const LABEL_MAP: Record<string, string> = {
   proteinas: "Proteínas",
   secos: "Secos",
 };
+
+const STATUS_CONF = {
+  ok:            { border: "#22C55E", emoji: "🟢", label: "OK" },
+  parcial:       { border: "#F59E0B", emoji: "🟡", label: "Parcial" },
+  nao_recebido:  { border: "#EF4444", emoji: "🔴", label: "Não recebido" },
+} as const;
 
 function getCatEmoji(cat: string): string {
   const c = cat.toLowerCase();
@@ -67,8 +78,6 @@ function normalizeUnidade(u: string): SupportedUnit {
   return "kg";
 }
 
-// ── Helpers do histórico ─────────────────────────────────────────────────────
-
 function formatDateTime(dateStr: string | null | undefined): string {
   if (!dateStr) return "—";
   try {
@@ -77,11 +86,8 @@ function formatDateTime(dateStr: string | null | undefined): string {
       return new Date(parts[0]!, parts[1]! - 1, parts[2]!).toLocaleDateString("pt-BR");
     }
     return new Date(dateStr).toLocaleString("pt-BR", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
+      day: "2-digit", month: "2-digit", year: "numeric",
+      hour: "2-digit", minute: "2-digit",
     });
   } catch {
     return dateStr;
@@ -102,14 +108,17 @@ function groupItemsByCategoria(
   return groups;
 }
 
-// ── Props / helpers ──────────────────────────────────────────────────────────
+// ── Props ────────────────────────────────────────────────────────────────────
 
 interface Props {
   unit: { id: string; name: string; brand_id: string | null };
   userId: string;
   produtos: ProdutoCatalogo[];
   pedidosIniciais: PedidoComItens[];
+  pedidosParaRecebimento: PedidoParaRecebimento[];
 }
+
+// ── StatusBadge ──────────────────────────────────────────────────────────────
 
 function StatusBadge({ status }: { status: PurchaseOrderStatus }) {
   const map: Record<PurchaseOrderStatus, { background: string; color: string }> = {
@@ -121,17 +130,7 @@ function StatusBadge({ status }: { status: PurchaseOrderStatus }) {
   };
   const s = map[status] ?? map.rascunho;
   return (
-    <span
-      style={{
-        ...s,
-        borderRadius: 99,
-        padding: "2px 10px",
-        fontSize: 11,
-        fontWeight: 700,
-        display: "inline-block",
-        flexShrink: 0,
-      }}
-    >
+    <span style={{ ...s, borderRadius: 99, padding: "2px 10px", fontSize: 11, fontWeight: 700, display: "inline-block", flexShrink: 0 }}>
       {status}
     </span>
   );
@@ -139,19 +138,17 @@ function StatusBadge({ status }: { status: PurchaseOrderStatus }) {
 
 // ── Componente principal ─────────────────────────────────────────────────────
 
-export function PedidosClient({ unit, produtos, pedidosIniciais }: Props) {
+export function PedidosClient({ unit, produtos, pedidosIniciais, pedidosParaRecebimento }: Props) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
+  const [isRecebendoPending, startRecebendoTransition] = useTransition();
 
-  const categorias = useMemo(
-    () => [...new Set(produtos.map((p) => p.categoria))].sort(),
-    [produtos],
-  );
+  // ── Abas ──
+  const [abaAtiva, setAbaAtiva] = useState<"pedidos" | "recebimento">("pedidos");
 
-  // ── Estado do formulário ──
-  const [categoriaAtiva, setCategoriaAtiva] = useState<string | null>(
-    categorias[0] ?? null,
-  );
+  // ── Estado do formulário de pedidos ──
+  const categorias = useMemo(() => [...new Set(produtos.map((p) => p.categoria))].sort(), [produtos]);
+  const [categoriaAtiva, setCategoriaAtiva] = useState<string | null>(categorias[0] ?? null);
   const [busca, setBusca] = useState("");
   const [qtds, setQtds] = useState<Record<string, number>>({});
   const [unidades, setUnidades] = useState<Record<string, string>>({});
@@ -165,39 +162,43 @@ export function PedidosClient({ unit, produtos, pedidosIniciais }: Props) {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [deletedIds, setDeletedIds] = useState<string[]>([]);
 
+  // ── Estado do recebimento ──
+  const [pedidoConferencia, setPedidoConferencia] = useState<PedidoParaRecebimento | null>(null);
+  const [qtdsRecebidas, setQtdsRecebidas] = useState<Record<string, number>>({});
+  const [obsItens, setObsItens] = useState<Record<string, string>>({});
+  const [obsGeralRecebimento, setObsGeralRecebimento] = useState("");
+  const [recebidosLocal, setRecebidosLocal] = useState<string[]>([]);
+
   // ── Dados derivados ──
   const carrinho = useMemo(
-    () =>
-      Object.entries(qtds)
-        .filter(([, v]) => v > 0)
-        .map(([nome, quantidade]) => ({
-          ingrediente_id: nome,
-          nome,
-          quantidade,
-          unidade: unidades[nome] ?? "kg",
-        })),
+    () => Object.entries(qtds).filter(([, v]) => v > 0).map(([nome, quantidade]) => ({
+      ingrediente_id: nome, nome, quantidade, unidade: unidades[nome] ?? "kg",
+    })),
     [qtds, unidades],
   );
 
-  const produtosPorNome = useMemo(
-    () => new Map(produtos.map((p) => [p.nome, p])),
-    [produtos],
-  );
+  const produtosPorNome = useMemo(() => new Map(produtos.map((p) => [p.nome, p])), [produtos]);
 
   const pedidosVisiveis = useMemo(
     () => pedidosIniciais.filter((p) => !deletedIds.includes(p.id)),
     [pedidosIniciais, deletedIds],
   );
 
+  const pedidosRecebimentoOrdenados = useMemo(
+    () => [...pedidosParaRecebimento].sort((a, b) => {
+      const aRec = a.recebimento !== null || recebidosLocal.includes(a.id);
+      const bRec = b.recebimento !== null || recebidosLocal.includes(b.id);
+      if (aRec === bRec) return 0;
+      return aRec ? 1 : -1;
+    }),
+    [pedidosParaRecebimento, recebidosLocal],
+  );
+
   const produtosFiltrados = useMemo(() => {
     if (busca.trim() === "") {
-      return categoriaAtiva
-        ? produtos.filter((p) => p.categoria === categoriaAtiva)
-        : [];
+      return categoriaAtiva ? produtos.filter((p) => p.categoria === categoriaAtiva) : [];
     }
-    return produtos.filter((p) =>
-      p.nome.toLowerCase().includes(busca.toLowerCase().trim()),
-    );
+    return produtos.filter((p) => p.nome.toLowerCase().includes(busca.toLowerCase().trim()));
   }, [produtos, busca, categoriaAtiva]);
 
   // ── Handlers do formulário ──
@@ -205,52 +206,30 @@ export function PedidosClient({ unit, produtos, pedidosIniciais }: Props) {
   function getUnidade(prod: ProdutoCatalogo): string {
     return unidades[prod.nome] ?? normalizeUnidade(prod.unidade);
   }
-
-  function handleCategoriaChange(cat: string) {
-    setCategoriaAtiva(cat);
-    setBusca("");
-  }
-
+  function handleCategoriaChange(cat: string) { setCategoriaAtiva(cat); setBusca(""); }
   function handleQtdChange(nome: string, val: string) {
     const n = parseFloat(val);
     setQtds((prev) => ({ ...prev, [nome]: isNaN(n) || n < 0 ? 0 : n }));
   }
-
   function handleIncrement(prod: ProdutoCatalogo) {
     setQtds((prev) => ({ ...prev, [prod.nome]: (prev[prod.nome] ?? 0) + 1 }));
   }
-
   function handleDecrement(prod: ProdutoCatalogo) {
-    setQtds((prev) => ({
-      ...prev,
-      [prod.nome]: Math.max(0, (prev[prod.nome] ?? 0) - 1),
-    }));
+    setQtds((prev) => ({ ...prev, [prod.nome]: Math.max(0, (prev[prod.nome] ?? 0) - 1) }));
   }
-
   function handleUnidadeChange(prod: ProdutoCatalogo, val: string) {
     setUnidades((prev) => ({ ...prev, [prod.nome]: val }));
   }
-
   function handleRemoverItem(nome: string) {
-    setQtds((prev) => {
-      const next = { ...prev };
-      delete next[nome];
-      return next;
-    });
+    setQtds((prev) => { const next = { ...prev }; delete next[nome]; return next; });
   }
-
   function handleEnviar() {
     startTransition(async () => {
       const result = await criarPedido(carrinho, observacoes || null);
       if (result.ok) {
-        setQtds({});
-        setObservacoes("");
-        setCarrinhoAberto(false);
-        toast.success("Pedido enviado com sucesso!");
-        router.refresh();
-      } else {
-        toast.error(result.error);
-      }
+        setQtds({}); setObservacoes(""); setCarrinhoAberto(false);
+        toast.success("Pedido enviado com sucesso!"); router.refresh();
+      } else { toast.error(result.error); }
     });
   }
 
@@ -258,66 +237,16 @@ export function PedidosClient({ unit, produtos, pedidosIniciais }: Props) {
 
   function handlePdfExport(p: PedidoComItens) {
     const groups = groupItemsByCategoria(p.purchase_order_items, produtosPorNome);
-
     let categoriesHtml = "";
     for (const [cat, items] of groups) {
-      const rows = items
-        .map(
-          (i) =>
-            `<tr><td>${i.nome}</td><td style="text-align:center;width:60px">${i.quantidade}</td><td style="text-align:center;width:52px">${i.unidade ?? ""}</td></tr>`,
-        )
-        .join("");
-      categoriesHtml += `
-        <div class="cat">
-          <div class="cat-title">${cat} <span class="cat-count">(${items.length})</span></div>
-          <table><thead><tr><th>Item</th><th>Qtd</th><th>Un.</th></tr></thead><tbody>${rows}</tbody></table>
-        </div>`;
+      const rows = items.map((i) =>
+        `<tr><td>${i.nome}</td><td style="text-align:center;width:60px">${i.quantidade}</td><td style="text-align:center;width:52px">${i.unidade ?? ""}</td></tr>`
+      ).join("");
+      categoriesHtml += `<div class="cat"><div class="cat-title">${cat} <span class="cat-count">(${items.length})</span></div><table><thead><tr><th>Item</th><th>Qtd</th><th>Un.</th></tr></thead><tbody>${rows}</tbody></table></div>`;
     }
-
-    const html = `<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-<meta charset="UTF-8">
-<title>Requisição – ${unit.name}</title>
-<style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: Arial, sans-serif; padding: 32px; color: #111; font-size: 13px; }
-  h1 { font-size: 20px; font-weight: 800; letter-spacing: -0.5px; margin-bottom: 12px; }
-  .meta { display: flex; gap: 32px; font-size: 12px; color: #555; margin-bottom: 16px; flex-wrap: wrap; }
-  .meta strong { color: #111; }
-  hr { border: none; border-top: 2px solid #111; margin: 16px 0 20px; }
-  .cat { margin-bottom: 20px; }
-  .cat-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; color: #333; padding-bottom: 6px; border-bottom: 1px solid #ddd; margin-bottom: 8px; }
-  .cat-count { font-weight: 400; color: #777; }
-  table { width: 100%; border-collapse: collapse; }
-  th { text-align: left; font-size: 10px; font-weight: 700; color: #888; text-transform: uppercase; letter-spacing: 0.6px; padding: 3px 6px; border-bottom: 1px solid #eee; }
-  td { padding: 5px 6px; border-bottom: 1px solid #f0f0f0; font-size: 12px; }
-  .obs { background: #f7f7f7; border-left: 3px solid #ccc; padding: 10px 12px; margin-top: 20px; font-size: 12px; color: #555; font-style: italic; border-radius: 2px; }
-  .footer { margin-top: 32px; font-size: 10px; color: #aaa; text-align: right; border-top: 1px solid #eee; padding-top: 8px; }
-  @media print { @page { margin: 16mm; } }
-</style>
-</head>
-<body>
-  <h1>REQUISIÇÃO DE COMPRAS</h1>
-  <div class="meta">
-    <span><strong>Unidade:</strong> ${unit.name}</span>
-    <span><strong>Data:</strong> ${formatDateTime(p.data_pedido)}</span>
-    <span><strong>Nº:</strong> ${p.id.slice(0, 8).toUpperCase()}</span>
-    <span><strong>Status:</strong> ${p.status}</span>
-  </div>
-  <hr>
-  ${categoriesHtml}
-  ${p.observacoes ? `<div class="obs">Obs: ${p.observacoes}</div>` : ""}
-  <div class="footer">Gerado em ${new Date().toLocaleString("pt-BR")} via KPH-OS</div>
-</body>
-</html>`;
-
+    const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><title>Requisição – ${unit.name}</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;padding:32px;color:#111;font-size:13px}h1{font-size:20px;font-weight:800;margin-bottom:12px}.meta{display:flex;gap:32px;font-size:12px;color:#555;margin-bottom:16px;flex-wrap:wrap}.meta strong{color:#111}hr{border:none;border-top:2px solid #111;margin:16px 0 20px}.cat{margin-bottom:20px}.cat-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#333;padding-bottom:6px;border-bottom:1px solid #ddd;margin-bottom:8px}.cat-count{font-weight:400;color:#777}table{width:100%;border-collapse:collapse}th{text-align:left;font-size:10px;font-weight:700;color:#888;text-transform:uppercase;padding:3px 6px;border-bottom:1px solid #eee}td{padding:5px 6px;border-bottom:1px solid #f0f0f0;font-size:12px}.obs{background:#f7f7f7;border-left:3px solid #ccc;padding:10px 12px;margin-top:20px;font-size:12px;color:#555;font-style:italic}.footer{margin-top:32px;font-size:10px;color:#aaa;text-align:right;border-top:1px solid #eee;padding-top:8px}@media print{@page{margin:16mm}}</style></head><body><h1>REQUISIÇÃO DE COMPRAS</h1><div class="meta"><span><strong>Unidade:</strong> ${unit.name}</span><span><strong>Data:</strong> ${formatDateTime(p.data_pedido)}</span><span><strong>Nº:</strong> ${p.id.slice(0, 8).toUpperCase()}</span><span><strong>Status:</strong> ${p.status}</span></div><hr>${categoriesHtml}${p.observacoes ? `<div class="obs">Obs: ${p.observacoes}</div>` : ""}<div class="footer">Gerado em ${new Date().toLocaleString("pt-BR")} via KPH-OS</div></body></html>`;
     const win = window.open("", "_blank", "width=820,height=680");
-    if (win) {
-      win.document.write(html);
-      win.document.close();
-      win.print();
-    }
+    if (win) { win.document.write(html); win.document.close(); win.print(); }
   }
 
   async function handleDeleteConfirm(id: string) {
@@ -326,461 +255,419 @@ export function PedidosClient({ unit, produtos, pedidosIniciais }: Props) {
     setDeletingId(null);
     if (result.ok) {
       setDeletedIds((prev) => [...prev, id]);
-      setConfirmingDelete(null);
-      setDeleteChecked(false);
+      setConfirmingDelete(null); setDeleteChecked(false);
       toast.success("Pedido excluído.");
-    } else {
-      toast.error(result.error);
+    } else { toast.error(result.error); }
+  }
+
+  // ── Handlers do recebimento ──
+
+  function handleSelecionarPedido(p: PedidoParaRecebimento) {
+    setPedidoConferencia(p);
+    if (!p.recebimento) {
+      const init: Record<string, number> = {};
+      p.purchase_order_items.forEach((item) => { init[item.id] = Number(item.quantidade); });
+      setQtdsRecebidas(init);
+      setObsItens({});
+      setObsGeralRecebimento("");
     }
   }
 
-  const totalItens = carrinho.length;
-  const footerResumo =
-    totalItens === 0
-      ? "Nenhum item adicionado"
-      : carrinho
-          .slice(0, 2)
-          .map((i) => i.nome)
-          .join(", ") + (totalItens > 2 ? ` +${totalItens - 2}` : "");
+  function handleVoltarRecebimento() {
+    setPedidoConferencia(null);
+    setQtdsRecebidas({}); setObsItens({}); setObsGeralRecebimento("");
+  }
 
-  // ── Estilos reutilizáveis ──
+  function getItemStatus(itemId: string, qtdPedida: number): "ok" | "parcial" | "nao_recebido" {
+    const r = qtdsRecebidas[itemId] ?? qtdPedida;
+    if (r <= 0) return "nao_recebido";
+    if (r < qtdPedida) return "parcial";
+    return "ok";
+  }
+
+  function handleFinalizarRecebimento() {
+    if (!pedidoConferencia) return;
+    startRecebendoTransition(async () => {
+      const itens: RecebimentoItemInput[] = pedidoConferencia.purchase_order_items.map((item) => ({
+        pedido_item_id: item.id,
+        nome: item.nome,
+        quantidade_pedida: Number(item.quantidade),
+        quantidade_recebida: qtdsRecebidas[item.id] ?? Number(item.quantidade),
+        unidade: item.unidade ?? "kg",
+        observacao: obsItens[item.id],
+      }));
+      const result = await finalizarRecebimento(pedidoConferencia.id, itens, obsGeralRecebimento || null);
+      if (result.ok) {
+        setRecebidosLocal((prev) => [...prev, pedidoConferencia.id]);
+        handleVoltarRecebimento();
+        toast.success("Recebimento finalizado!");
+        router.refresh();
+      } else { toast.error(result.error); }
+    });
+  }
+
+  // ── Derivados inline ──
+
+  const totalItens = carrinho.length;
+  const footerResumo = totalItens === 0
+    ? "Nenhum item adicionado"
+    : carrinho.slice(0, 2).map((i) => i.nome).join(", ") + (totalItens > 2 ? ` +${totalItens - 2}` : "");
+
+  const conferenceSummary = pedidoConferencia
+    ? pedidoConferencia.purchase_order_items.reduce(
+        (acc, item) => { acc[getItemStatus(item.id, Number(item.quantidade))]++; return acc; },
+        { ok: 0, parcial: 0, nao_recebido: 0 },
+      )
+    : null;
 
   const smallBtn = (active = true, danger = false) => ({
-    height: 32,
-    padding: "0 12px",
-    fontSize: 12,
-    fontWeight: 600,
-    border: "1px solid var(--border)",
-    borderRadius: 6,
+    height: 32, padding: "0 12px", fontSize: 12, fontWeight: 600,
+    border: "1px solid var(--border)", borderRadius: 6,
     background: danger ? "#7F1D1D" : "var(--surface-2)",
     color: danger ? "#FCA5A5" : active ? "var(--text-2)" : "var(--text-3)",
-    cursor: active ? "pointer" : "not-allowed",
-    opacity: active ? 1 : 0.4,
-    whiteSpace: "nowrap" as const,
-    flexShrink: 0,
+    cursor: active ? "pointer" : "not-allowed" as const,
+    opacity: active ? 1 : 0.4, whiteSpace: "nowrap" as const, flexShrink: 0,
   });
+
+  // ── JSX ─────────────────────────────────────────────────────────────────────
 
   return (
     <div>
-      {/* ══ TRÊS ZONAS FIXAS ════════════════════════════════════════════════ */}
-      <div
-        style={{
-          height: "100dvh",
-          display: "flex",
-          flexDirection: "column",
-          overflow: "hidden",
-        }}
-      >
-        {/* HEADER ────────────────────────────────────────────────────────── */}
-        <header
-          style={{
-            height: 64,
-            flexShrink: 0,
-            display: "flex",
-            alignItems: "center",
-            gap: 12,
-            padding: "0 16px",
-            borderBottom: "1px solid var(--border)",
-            background: "var(--surface)",
-          }}
-        >
-          <input
-            type="search"
-            placeholder="Buscar produto…"
-            value={busca}
-            onChange={(e) => setBusca(e.target.value)}
-            style={{
-              flex: 1,
-              background: "var(--surface-2)",
-              border: "1px solid var(--border)",
-              borderRadius: 10,
-              color: "var(--text)",
-              fontSize: 15,
-              padding: "10px 14px",
-              outline: "none",
-            }}
-          />
-          <button
-            type="button"
-            onClick={() => setCarrinhoAberto(true)}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              height: 44,
-              background: totalItens > 0 ? "var(--brand)" : "var(--surface-2)",
-              color: totalItens > 0 ? "#fff" : "var(--text-2)",
-              border: "1px solid var(--border)",
-              borderRadius: 10,
-              padding: "0 16px",
-              fontSize: 14,
-              fontWeight: 700,
-              cursor: "pointer",
-              whiteSpace: "nowrap",
-              flexShrink: 0,
-            }}
-          >
-            <ShoppingBag size={18} />
-            {totalItens > 0 ? `Carrinho (${totalItens})` : "Carrinho"}
-          </button>
-        </header>
+      {/* ══ WRAPPER 100DVH (tabs + conteúdo) ════════════════════════════════ */}
+      <div style={{ height: "100dvh", display: "flex", flexDirection: "column", overflow: "hidden" }}>
 
-        {/* CONTEÚDO CENTRAL ───────────────────────────────────────────────── */}
-        <div style={{ flex: 1, overflow: "hidden", display: "flex" }}>
-          {/* Coluna esquerda — Categorias */}
-          <nav
-            style={{
-              width: 160,
-              flexShrink: 0,
-              overflowY: "auto",
-              borderRight: "1px solid var(--border)",
-              background: "var(--surface)",
-              padding: "8px 6px",
-            }}
-          >
-            {categorias.length === 0 ? (
-              <div
-                style={{ padding: 12, color: "var(--text-3)", fontSize: 12, textAlign: "center" }}
-              >
-                Nenhum produto.
-              </div>
-            ) : (
-              categorias.map((cat) => {
-                const isActive = cat === categoriaAtiva;
-                return (
-                  <button
-                    key={cat}
-                    type="button"
-                    onClick={() => handleCategoriaChange(cat)}
-                    style={{
-                      display: "flex",
-                      flexDirection: "column",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      gap: 4,
-                      width: "100%",
-                      minHeight: 72,
-                      padding: "10px 8px",
-                      marginBottom: 4,
-                      background: isActive ? "var(--brand)" : "var(--surface-2)",
-                      border: "none",
-                      borderRadius: 10,
-                      color: isActive ? "#fff" : "var(--text-2)",
-                      cursor: "pointer",
-                      textAlign: "center",
-                    }}
-                  >
-                    <span style={{ fontSize: 28, lineHeight: 1 }}>{getCatEmoji(cat)}</span>
-                    <span
-                      style={{
-                        fontSize: 11,
-                        fontWeight: 600,
-                        lineHeight: 1.3,
-                        whiteSpace: "normal",
-                        wordBreak: "break-word",
-                      }}
-                    >
-                      {LABEL_MAP[cat] ?? cat}
-                    </span>
-                  </button>
-                );
-              })
-            )}
-          </nav>
+        {/* ABAS ─────────────────────────────────────────────────────────── */}
+        <nav style={{ flexShrink: 0, display: "flex", borderBottom: "1px solid var(--border)", background: "var(--surface)" }}>
+          {(["pedidos", "recebimento"] as const).map((aba) => (
+            <button
+              key={aba}
+              type="button"
+              onClick={() => setAbaAtiva(aba)}
+              style={{
+                flex: 1, height: 48, border: "none",
+                borderBottom: abaAtiva === aba ? "2px solid var(--brand)" : "2px solid transparent",
+                background: "none",
+                color: abaAtiva === aba ? "var(--text)" : "var(--text-3)",
+                fontWeight: abaAtiva === aba ? 700 : 500,
+                fontSize: 14, cursor: "pointer",
+                display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+              }}
+            >
+              {aba === "pedidos" ? "📋 Pedidos" : "📦 Recebimento"}
+            </button>
+          ))}
+        </nav>
 
-          {/* Coluna direita — Produtos */}
-          <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px" }}>
-            {!categoriaAtiva && busca.trim() === "" ? (
-              <div
-                style={{
-                  color: "var(--text-3)",
-                  fontSize: 14,
-                  textAlign: "center",
-                  paddingTop: 48,
-                }}
-              >
-                Selecione uma categoria.
-              </div>
-            ) : produtosFiltrados.length === 0 ? (
-              <div
-                style={{
-                  color: "var(--text-3)",
-                  fontSize: 14,
-                  textAlign: "center",
-                  paddingTop: 48,
-                }}
-              >
-                Nenhum produto encontrado.
-              </div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {produtosFiltrados.map((prod) => {
-                  const qty = qtds[prod.nome] ?? 0;
-                  const inCart = qty > 0;
-                  return (
-                    <div
-                      key={prod.nome}
-                      style={{
-                        minHeight: 72,
-                        padding: "14px 16px",
-                        background: "var(--surface)",
-                        border: inCart
-                          ? "1px solid var(--brand)"
-                          : "1px solid var(--border)",
-                        borderLeft: inCart
-                          ? "3px solid var(--brand)"
-                          : "1px solid var(--border)",
-                        borderRadius: 10,
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 16,
-                      }}
-                    >
-                      <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 2 }}>
-                        <span
-                          style={{
-                            fontSize: 15,
-                            fontWeight: 600,
-                            color: "var(--text)",
-                            lineHeight: 1.3,
-                          }}
+        {/* CONTEÚDO DAS ABAS ────────────────────────────────────────────── */}
+        <div style={{ flex: 1, overflow: "hidden" }}>
+
+          {/* ── ABA PEDIDOS ────────────────────────────────────────────── */}
+          {abaAtiva === "pedidos" && (
+            <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+
+              {/* Header busca + carrinho */}
+              <header style={{ height: 64, flexShrink: 0, display: "flex", alignItems: "center", gap: 12, padding: "0 16px", borderBottom: "1px solid var(--border)", background: "var(--surface)" }}>
+                <input
+                  type="search"
+                  placeholder="Buscar produto…"
+                  value={busca}
+                  onChange={(e) => setBusca(e.target.value)}
+                  style={{ flex: 1, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 10, color: "var(--text)", fontSize: 15, padding: "10px 14px", outline: "none" }}
+                />
+                <button
+                  type="button"
+                  onClick={() => setCarrinhoAberto(true)}
+                  style={{ display: "flex", alignItems: "center", gap: 8, height: 44, background: totalItens > 0 ? "var(--brand)" : "var(--surface-2)", color: totalItens > 0 ? "#fff" : "var(--text-2)", border: "1px solid var(--border)", borderRadius: 10, padding: "0 16px", fontSize: 14, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 }}
+                >
+                  <ShoppingBag size={18} />
+                  {totalItens > 0 ? `Carrinho (${totalItens})` : "Carrinho"}
+                </button>
+              </header>
+
+              {/* Conteúdo central: categorias + produtos */}
+              <div style={{ flex: 1, overflow: "hidden", display: "flex" }}>
+
+                {/* Coluna esquerda — Categorias */}
+                <nav style={{ width: 160, flexShrink: 0, overflowY: "auto", borderRight: "1px solid var(--border)", background: "var(--surface)", padding: "8px 6px" }}>
+                  {categorias.length === 0 ? (
+                    <div style={{ padding: 12, color: "var(--text-3)", fontSize: 12, textAlign: "center" }}>Nenhum produto.</div>
+                  ) : (
+                    categorias.map((cat) => {
+                      const isActive = cat === categoriaAtiva;
+                      return (
+                        <button key={cat} type="button" onClick={() => handleCategoriaChange(cat)}
+                          style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4, width: "100%", minHeight: 72, padding: "10px 8px", marginBottom: 4, background: isActive ? "var(--brand)" : "var(--surface-2)", border: "none", borderRadius: 10, color: isActive ? "#fff" : "var(--text-2)", cursor: "pointer", textAlign: "center" }}
                         >
-                          {prod.nome}
-                        </span>
-                        {busca.trim() !== "" && (
-                          <span style={{ fontSize: 11, color: "var(--text-3)" }}>
-                            {LABEL_MAP[prod.categoria] ?? prod.categoria}
+                          <span style={{ fontSize: 28, lineHeight: 1 }}>{getCatEmoji(cat)}</span>
+                          <span style={{ fontSize: 11, fontWeight: 600, lineHeight: 1.3, whiteSpace: "normal", wordBreak: "break-word" }}>
+                            {LABEL_MAP[cat] ?? cat}
                           </span>
-                        )}
-                      </div>
+                        </button>
+                      );
+                    })
+                  )}
+                </nav>
 
-                      <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-                        <button
-                          type="button"
-                          onClick={() => handleDecrement(prod)}
-                          disabled={qty <= 0}
-                          style={{
-                            width: 44, height: 44, display: "flex", alignItems: "center",
-                            justifyContent: "center", border: "1px solid var(--border)",
-                            borderRadius: 8, background: "var(--surface-2)", color: "var(--text)",
-                            fontSize: 20, fontWeight: 700, flexShrink: 0,
-                            cursor: qty <= 0 ? "not-allowed" : "pointer",
-                            opacity: qty <= 0 ? 0.3 : 1,
-                          }}
-                        >
-                          −
-                        </button>
-                        <input
-                          type="number"
-                          inputMode="decimal"
-                          min="0"
-                          step="any"
-                          value={qty === 0 ? "" : qty}
-                          placeholder="0"
-                          onChange={(e) => handleQtdChange(prod.nome, e.target.value)}
-                          style={{
-                            width: 52, height: 44, background: "var(--surface-2)",
-                            border: "1px solid var(--border)", borderRadius: 8,
-                            color: "var(--text)", fontSize: 16, fontWeight: 700,
-                            textAlign: "center", outline: "none", padding: "0 4px",
-                          }}
-                        />
-                        <button
-                          type="button"
-                          onClick={() => handleIncrement(prod)}
-                          style={{
-                            width: 44, height: 44, display: "flex", alignItems: "center",
-                            justifyContent: "center", border: "1px solid var(--border)",
-                            borderRadius: 8, background: "var(--surface-2)", color: "var(--text)",
-                            fontSize: 20, fontWeight: 700, cursor: "pointer", flexShrink: 0,
-                          }}
-                        >
-                          +
-                        </button>
-                        <select
-                          value={getUnidade(prod)}
-                          onChange={(e) => handleUnidadeChange(prod, e.target.value)}
-                          style={{
-                            height: 44, background: "var(--surface-2)",
-                            border: "1px solid var(--border)", borderRadius: 8,
-                            color: "var(--text-3)", fontSize: 13, fontWeight: 600,
-                            padding: "0 6px", outline: "none", flexShrink: 0,
-                          }}
-                        >
-                          <option value="kg">kg</option>
-                          <option value="g">g</option>
-                          <option value="l">l</option>
-                          <option value="ml">ml</option>
-                          <option value="un">un</option>
-                        </select>
+                {/* Coluna direita — Produtos */}
+                <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px" }}>
+                  {!categoriaAtiva && busca.trim() === "" ? (
+                    <div style={{ color: "var(--text-3)", fontSize: 14, textAlign: "center", paddingTop: 48 }}>Selecione uma categoria.</div>
+                  ) : produtosFiltrados.length === 0 ? (
+                    <div style={{ color: "var(--text-3)", fontSize: 14, textAlign: "center", paddingTop: 48 }}>Nenhum produto encontrado.</div>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {produtosFiltrados.map((prod) => {
+                        const qty = qtds[prod.nome] ?? 0;
+                        const inCart = qty > 0;
+                        return (
+                          <div key={prod.nome} style={{ minHeight: 72, padding: "14px 16px", background: "var(--surface)", border: inCart ? "1px solid var(--brand)" : "1px solid var(--border)", borderLeft: inCart ? "3px solid var(--brand)" : "1px solid var(--border)", borderRadius: 10, display: "flex", alignItems: "center", gap: 16 }}>
+                            <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 2 }}>
+                              <span style={{ fontSize: 15, fontWeight: 600, color: "var(--text)", lineHeight: 1.3 }}>{prod.nome}</span>
+                              {busca.trim() !== "" && (
+                                <span style={{ fontSize: 11, color: "var(--text-3)" }}>{LABEL_MAP[prod.categoria] ?? prod.categoria}</span>
+                              )}
+                            </div>
+                            <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                              <button type="button" onClick={() => handleDecrement(prod)} disabled={qty <= 0}
+                                style={{ width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid var(--border)", borderRadius: 8, background: "var(--surface-2)", color: "var(--text)", fontSize: 20, fontWeight: 700, flexShrink: 0, cursor: qty <= 0 ? "not-allowed" : "pointer", opacity: qty <= 0 ? 0.3 : 1 }}>−</button>
+                              <input type="number" inputMode="decimal" min="0" step="any" value={qty === 0 ? "" : qty} placeholder="0"
+                                onChange={(e) => handleQtdChange(prod.nome, e.target.value)}
+                                style={{ width: 52, height: 44, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", fontSize: 16, fontWeight: 700, textAlign: "center", outline: "none", padding: "0 4px" }} />
+                              <button type="button" onClick={() => handleIncrement(prod)}
+                                style={{ width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid var(--border)", borderRadius: 8, background: "var(--surface-2)", color: "var(--text)", fontSize: 20, fontWeight: 700, cursor: "pointer", flexShrink: 0 }}>+</button>
+                              <select value={getUnidade(prod)} onChange={(e) => handleUnidadeChange(prod, e.target.value)}
+                                style={{ height: 44, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text-3)", fontSize: 13, fontWeight: 600, padding: "0 6px", outline: "none", flexShrink: 0 }}>
+                                <option value="kg">kg</option><option value="g">g</option>
+                                <option value="l">l</option><option value="ml">ml</option><option value="un">un</option>
+                              </select>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Footer enviar pedido */}
+              <footer style={{ height: 72, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, padding: "0 16px", borderTop: "1px solid var(--border)", background: "var(--surface)" }}>
+                <span style={{ fontSize: 13, color: totalItens > 0 ? "var(--text-2)" : "var(--text-3)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{footerResumo}</span>
+                <button type="button" onClick={handleEnviar} disabled={totalItens === 0 || isPending}
+                  style={{ height: 48, minWidth: 160, background: "#22C55E", color: "#fff", border: "none", borderRadius: 10, padding: "0 24px", fontSize: 15, fontWeight: 700, cursor: totalItens === 0 || isPending ? "not-allowed" : "pointer", opacity: totalItens === 0 || isPending ? 0.4 : 1, flexShrink: 0, whiteSpace: "nowrap" }}>
+                  {isPending ? "Enviando…" : "Enviar Pedido"}
+                </button>
+              </footer>
+            </div>
+          )}
+
+          {/* ── ABA RECEBIMENTO ────────────────────────────────────────── */}
+          {abaAtiva === "recebimento" && (
+            <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+
+              {pedidoConferencia ? (
+                // ── TELA DE CONFERÊNCIA ──────────────────────────────────
+                <>
+                  {/* Header conferência */}
+                  <header style={{ height: 64, flexShrink: 0, display: "flex", alignItems: "center", gap: 12, padding: "0 16px", borderBottom: "1px solid var(--border)", background: "var(--surface)" }}>
+                    <button type="button" onClick={handleVoltarRecebimento}
+                      style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text-2)", padding: "8px 12px", fontSize: 13, fontWeight: 600, cursor: "pointer", flexShrink: 0 }}>
+                      <ArrowLeft size={15} /> Voltar
+                    </button>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text)" }}>
+                        {pedidoConferencia.recebimento ? "Recebimento anterior" : "Recebendo:"} {formatDateTime(pedidoConferencia.data_pedido)}
+                      </div>
+                      <div style={{ fontSize: 11, color: "var(--text-3)" }}>
+                        {pedidoConferencia.purchase_order_items.length} itens · {unit.name}
                       </div>
                     </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </div>
+                    {pedidoConferencia.recebimento && (
+                      <span style={{ fontSize: 11, fontWeight: 700, background: "#15803D", color: "#fff", borderRadius: 99, padding: "3px 10px", flexShrink: 0 }}>
+                        ✓ Recebido em {formatDateTime(pedidoConferencia.recebimento.created_at)}
+                      </span>
+                    )}
+                  </header>
 
-        {/* FOOTER ────────────────────────────────────────────────────────── */}
-        <footer
-          style={{
-            height: 72,
-            flexShrink: 0,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 16,
-            padding: "0 16px",
-            borderTop: "1px solid var(--border)",
-            background: "var(--surface)",
-          }}
-        >
-          <span
-            style={{
-              fontSize: 13,
-              color: totalItens > 0 ? "var(--text-2)" : "var(--text-3)",
-              flex: 1,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {footerResumo}
-          </span>
-          <button
-            type="button"
-            onClick={handleEnviar}
-            disabled={totalItens === 0 || isPending}
-            style={{
-              height: 48,
-              minWidth: 160,
-              background: "#22C55E",
-              color: "#fff",
-              border: "none",
-              borderRadius: 10,
-              padding: "0 24px",
-              fontSize: 15,
-              fontWeight: 700,
-              cursor: totalItens === 0 || isPending ? "not-allowed" : "pointer",
-              opacity: totalItens === 0 || isPending ? 0.4 : 1,
-              flexShrink: 0,
-              whiteSpace: "nowrap",
-            }}
-          >
-            {isPending ? "Enviando…" : "Enviar Pedido"}
-          </button>
-        </footer>
+                  {/* Corpo — itens */}
+                  <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px" }}>
+                    {pedidoConferencia.recebimento ? (
+                      // Modo somente leitura
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                        {pedidoConferencia.recebimento.recebimento_itens.map((ri) => {
+                          const conf = STATUS_CONF[ri.status as keyof typeof STATUS_CONF] ?? STATUS_CONF.ok;
+                          return (
+                            <div key={ri.id}
+                              style={{ padding: "14px 16px", background: "var(--surface)", border: "1px solid var(--border)", borderLeft: `3px solid ${conf.border}`, borderRadius: 10 }}>
+                              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+                                <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>{ri.nome}</span>
+                                <span style={{ fontSize: 12, color: "var(--text-3)" }}>{conf.emoji} {conf.label}</span>
+                              </div>
+                              <div style={{ fontSize: 12, color: "var(--text-3)" }}>
+                                Pedido: {ri.quantidade_pedida} {ri.unidade ?? ""} · Recebido: {ri.quantidade_recebida} {ri.unidade ?? ""}
+                              </div>
+                              {ri.observacao && (
+                                <div style={{ fontSize: 11, color: "var(--text-3)", fontStyle: "italic", marginTop: 4 }}>{ri.observacao}</div>
+                              )}
+                            </div>
+                          );
+                        })}
+                        {pedidoConferencia.recebimento.observacao && (
+                          <div style={{ marginTop: 8, background: "var(--surface-2)", border: "1px solid var(--border)", borderLeft: "3px solid var(--text-3)", borderRadius: 6, padding: "10px 12px", fontSize: 13, color: "var(--text-3)", fontStyle: "italic" }}>
+                            Obs geral: {pedidoConferencia.recebimento.observacao}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      // Modo edição
+                      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                        {Array.from(groupItemsByCategoria(pedidoConferencia.purchase_order_items, produtosPorNome)).map(([cat, items]) => (
+                          <div key={cat}>
+                            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: 0.7, paddingBottom: 6, marginBottom: 8, borderBottom: "1px solid var(--border)" }}>
+                              {cat} ({items.length})
+                            </div>
+                            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                              {items.map((item: PurchaseOrderItemRow) => {
+                                const qtdPedida = Number(item.quantidade);
+                                const qtdRec = qtdsRecebidas[item.id] ?? qtdPedida;
+                                const status = getItemStatus(item.id, qtdPedida);
+                                const conf = STATUS_CONF[status];
+                                const catProd = produtosPorNome.get(item.nome)?.categoria ?? "";
+                                return (
+                                  <div key={item.id}
+                                    style={{ padding: "14px 16px", background: "var(--surface)", border: "1px solid var(--border)", borderLeft: `3px solid ${conf.border}`, borderRadius: 10, display: "flex", flexDirection: "column", gap: 8, minHeight: 80 }}>
+                                    <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
+                                      <div>
+                                        <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text)", textTransform: "uppercase", letterSpacing: 0.2 }}>{item.nome}</div>
+                                        <div style={{ fontSize: 11, color: "var(--text-3)", marginTop: 2 }}>{LABEL_MAP[catProd] ?? catProd}</div>
+                                        <div style={{ fontSize: 12, color: "var(--text-3)", marginTop: 4 }}>Pedido: {qtdPedida} {item.unidade ?? ""}</div>
+                                      </div>
+                                      <span style={{ fontSize: 12, color: "var(--text-2)", flexShrink: 0 }}>{conf.emoji} {conf.label}</span>
+                                    </div>
+                                    {/* Controles ± */}
+                                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                      <span style={{ fontSize: 12, color: "var(--text-3)", flexShrink: 0 }}>Recebido:</span>
+                                      <button type="button"
+                                        onClick={() => setQtdsRecebidas((p) => ({ ...p, [item.id]: Math.max(0, (p[item.id] ?? qtdPedida) - 1) }))}
+                                        disabled={qtdRec <= 0}
+                                        style={{ width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid var(--border)", borderRadius: 8, background: "var(--surface-2)", color: "var(--text)", fontSize: 20, fontWeight: 700, cursor: qtdRec <= 0 ? "not-allowed" : "pointer", opacity: qtdRec <= 0 ? 0.3 : 1 }}>−</button>
+                                      <input type="number" inputMode="decimal" min="0" step="any" value={qtdRec === 0 ? "" : qtdRec} placeholder="0"
+                                        onChange={(e) => { const n = parseFloat(e.target.value); setQtdsRecebidas((p) => ({ ...p, [item.id]: isNaN(n) || n < 0 ? 0 : n })); }}
+                                        style={{ width: 60, height: 44, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", fontSize: 16, fontWeight: 700, textAlign: "center", outline: "none", padding: "0 4px" }} />
+                                      <button type="button"
+                                        onClick={() => setQtdsRecebidas((p) => ({ ...p, [item.id]: (p[item.id] ?? qtdPedida) + 1 }))}
+                                        style={{ width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid var(--border)", borderRadius: 8, background: "var(--surface-2)", color: "var(--text)", fontSize: 20, fontWeight: 700, cursor: "pointer" }}>+</button>
+                                      <span style={{ fontSize: 12, color: "var(--text-3)" }}>{item.unidade ?? ""}</span>
+                                    </div>
+                                    {/* Obs por item */}
+                                    <input type="text"
+                                      placeholder="Obs: ex: chegou amassado…"
+                                      value={obsItens[item.id] ?? ""}
+                                      onChange={(e) => setObsItens((p) => ({ ...p, [item.id]: e.target.value }))}
+                                      style={{ background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text)", fontSize: 12, padding: "7px 10px", outline: "none", width: "100%" }} />
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ))}
+
+                        {/* Obs geral */}
+                        <div style={{ marginTop: 4 }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: 0.7, marginBottom: 6 }}>Observação geral</div>
+                          <textarea rows={2} placeholder="Observações do recebimento (opcional)…"
+                            value={obsGeralRecebimento}
+                            onChange={(e) => setObsGeralRecebimento(e.target.value)}
+                            style={{ width: "100%", background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", fontSize: 13, padding: "10px 12px", outline: "none", resize: "vertical", boxSizing: "border-box" }} />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Footer conferência — só em modo edição */}
+                  {!pedidoConferencia.recebimento && conferenceSummary && (
+                    <footer style={{ flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, padding: "12px 16px", borderTop: "1px solid var(--border)", background: "var(--surface)" }}>
+                      <span style={{ fontSize: 13, color: "var(--text-3)" }}>
+                        🟢 {conferenceSummary.ok} ok · 🟡 {conferenceSummary.parcial} parciais · 🔴 {conferenceSummary.nao_recebido} não recebidos
+                      </span>
+                      <button type="button" onClick={handleFinalizarRecebimento} disabled={isRecebendoPending}
+                        style={{ height: 52, minWidth: 200, background: "#22C55E", color: "#fff", border: "none", borderRadius: 10, padding: "0 24px", fontSize: 15, fontWeight: 700, cursor: isRecebendoPending ? "not-allowed" : "pointer", opacity: isRecebendoPending ? 0.6 : 1, flexShrink: 0 }}>
+                        {isRecebendoPending ? "Finalizando…" : "Finalizar Recebimento"}
+                      </button>
+                    </footer>
+                  )}
+                </>
+              ) : (
+                // ── LISTA DE PEDIDOS PARA RECEBER ──────────────────────
+                <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px" }}>
+                  {pedidosRecebimentoOrdenados.length === 0 ? (
+                    <div style={{ color: "var(--text-3)", fontSize: 13, textAlign: "center", paddingTop: 48 }}>Nenhum pedido encontrado.</div>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                      {pedidosRecebimentoOrdenados.map((p) => {
+                        const jaRecebido = p.recebimento !== null || recebidosLocal.includes(p.id);
+                        return (
+                          <div key={p.id} onClick={() => handleSelecionarPedido(p)}
+                            style={{ padding: "14px 16px", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, cursor: "pointer", display: "flex", alignItems: "center", gap: 12, opacity: jaRecebido ? 0.65 : 1 }}>
+                            <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                                <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>{formatDateTime(p.data_pedido)}</span>
+                                <StatusBadge status={p.status} />
+                                {jaRecebido && (
+                                  <span style={{ fontSize: 11, fontWeight: 700, background: "#15803D", color: "#fff", borderRadius: 99, padding: "2px 8px" }}>✓ Recebido</span>
+                                )}
+                              </div>
+                              <span style={{ fontSize: 12, color: "var(--text-3)" }}>
+                                {p.purchase_order_items.length} {p.purchase_order_items.length === 1 ? "item" : "itens"}
+                              </span>
+                            </div>
+                            <ChevronRight size={18} style={{ color: "var(--text-3)", flexShrink: 0 }} />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+        </div>
       </div>
 
       {/* ══ CARRINHO DRAWER ═════════════════════════════════════════════════ */}
       {carrinhoAberto && (
         <>
-          <div
-            style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 40 }}
-            onClick={() => setCarrinhoAberto(false)}
-          />
-          <div
-            style={{
-              position: "fixed",
-              top: 0, right: 0,
-              height: "100dvh",
-              width: 320,
-              background: "var(--surface)",
-              zIndex: 50,
-              display: "flex",
-              flexDirection: "column",
-              boxShadow: "-8px 0 32px rgba(0,0,0,0.3)",
-            }}
-          >
-            <div
-              style={{
-                display: "flex", alignItems: "center", justifyContent: "space-between",
-                padding: "0 16px", height: 64, borderBottom: "1px solid var(--border)", flexShrink: 0,
-              }}
-            >
-              <span style={{ fontSize: 16, fontWeight: 700, color: "var(--text)" }}>
-                Carrinho{totalItens > 0 ? ` (${totalItens})` : ""}
-              </span>
-              <button
-                type="button"
-                onClick={() => setCarrinhoAberto(false)}
-                style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-3)", padding: 8, display: "flex", alignItems: "center" }}
-              >
-                <X size={20} />
-              </button>
+          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 40 }} onClick={() => setCarrinhoAberto(false)} />
+          <div style={{ position: "fixed", top: 0, right: 0, height: "100dvh", width: 320, background: "var(--surface)", zIndex: 50, display: "flex", flexDirection: "column", boxShadow: "-8px 0 32px rgba(0,0,0,0.3)" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 16px", height: 64, borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
+              <span style={{ fontSize: 16, fontWeight: 700, color: "var(--text)" }}>Carrinho{totalItens > 0 ? ` (${totalItens})` : ""}</span>
+              <button type="button" onClick={() => setCarrinhoAberto(false)} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-3)", padding: 8, display: "flex", alignItems: "center" }}><X size={20} /></button>
             </div>
-
             <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px" }}>
               {carrinho.length === 0 ? (
-                <div style={{ color: "var(--text-3)", fontSize: 13, textAlign: "center", paddingTop: 32 }}>
-                  Nenhum item adicionado.
-                </div>
+                <div style={{ color: "var(--text-3)", fontSize: 13, textAlign: "center", paddingTop: 32 }}>Nenhum item adicionado.</div>
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   {carrinho.map((item) => (
-                    <div
-                      key={item.ingrediente_id}
-                      style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", background: "var(--surface-2)", borderRadius: 8 }}
-                    >
-                      <span style={{ flex: 1, fontSize: 13, color: "var(--text)", lineHeight: 1.3 }}>
-                        {item.nome}
-                      </span>
-                      <input
-                        type="number"
-                        inputMode="decimal"
-                        min="0"
-                        step="any"
-                        value={item.quantidade}
+                    <div key={item.ingrediente_id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", background: "var(--surface-2)", borderRadius: 8 }}>
+                      <span style={{ flex: 1, fontSize: 13, color: "var(--text)", lineHeight: 1.3 }}>{item.nome}</span>
+                      <input type="number" inputMode="decimal" min="0" step="any" value={item.quantidade}
                         onChange={(e) => handleQtdChange(item.nome, e.target.value)}
-                        style={{
-                          width: 52, height: 36, background: "var(--surface)",
-                          border: "1px solid var(--border)", borderRadius: 6,
-                          color: "var(--text)", fontSize: 14, fontWeight: 700,
-                          textAlign: "center", outline: "none", padding: "0 4px",
-                        }}
-                      />
-                      <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-3)", minWidth: 22, textAlign: "center" }}>
-                        {item.unidade}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => handleRemoverItem(item.nome)}
-                        style={{ background: "none", border: "none", cursor: "pointer", color: "#EF4444", padding: 4, display: "flex", alignItems: "center", flexShrink: 0 }}
-                      >
-                        <X size={16} />
-                      </button>
+                        style={{ width: 52, height: 36, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text)", fontSize: 14, fontWeight: 700, textAlign: "center", outline: "none", padding: "0 4px" }} />
+                      <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-3)", minWidth: 22, textAlign: "center" }}>{item.unidade}</span>
+                      <button type="button" onClick={() => handleRemoverItem(item.nome)} style={{ background: "none", border: "none", cursor: "pointer", color: "#EF4444", padding: 4, display: "flex", alignItems: "center", flexShrink: 0 }}><X size={16} /></button>
                     </div>
                   ))}
                 </div>
               )}
               <div style={{ marginTop: 16 }}>
-                <textarea
-                  placeholder="Observações (opcional)…"
-                  rows={3}
-                  value={observacoes}
-                  onChange={(e) => setObservacoes(e.target.value)}
-                  style={{
-                    width: "100%", background: "var(--surface-2)", border: "1px solid var(--border)",
-                    borderRadius: 8, color: "var(--text)", fontSize: 13, padding: "10px 12px",
-                    outline: "none", resize: "vertical", boxSizing: "border-box",
-                  }}
-                />
+                <textarea placeholder="Observações (opcional)…" rows={3} value={observacoes} onChange={(e) => setObservacoes(e.target.value)}
+                  style={{ width: "100%", background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", fontSize: 13, padding: "10px 12px", outline: "none", resize: "vertical", boxSizing: "border-box" }} />
               </div>
             </div>
-
             <div style={{ padding: "12px 16px", borderTop: "1px solid var(--border)", flexShrink: 0 }}>
-              <button
-                type="button"
-                onClick={handleEnviar}
-                disabled={totalItens === 0 || isPending}
-                style={{
-                  width: "100%", height: 48, background: "#22C55E", color: "#fff",
-                  border: "none", borderRadius: 10, fontSize: 15, fontWeight: 700,
-                  cursor: totalItens === 0 || isPending ? "not-allowed" : "pointer",
-                  opacity: totalItens === 0 || isPending ? 0.4 : 1,
-                }}
-              >
+              <button type="button" onClick={handleEnviar} disabled={totalItens === 0 || isPending}
+                style={{ width: "100%", height: 48, background: "#22C55E", color: "#fff", border: "none", borderRadius: 10, fontSize: 15, fontWeight: 700, cursor: totalItens === 0 || isPending ? "not-allowed" : "pointer", opacity: totalItens === 0 || isPending ? 0.4 : 1 }}>
                 {isPending ? "Enviando…" : "Enviar Pedido"}
               </button>
             </div>
@@ -788,220 +675,82 @@ export function PedidosClient({ unit, produtos, pedidosIniciais }: Props) {
         </>
       )}
 
-      {/* ══ HISTÓRICO ═══════════════════════════════════════════════════════ */}
-      <div style={{ padding: "32px 16px" }}>
-        <div style={{ borderTop: "1px solid var(--border)", paddingTop: 24, marginBottom: 20 }}>
-          <h2
-            style={{ fontSize: 16, fontWeight: 700, color: "var(--text)", margin: 0, letterSpacing: -0.2 }}
-          >
-            Histórico de Pedidos
-          </h2>
-        </div>
-
-        {pedidosVisiveis.length === 0 ? (
-          <div style={{ color: "var(--text-3)", fontSize: 13, textAlign: "center", padding: "24px 0" }}>
-            Nenhum pedido encontrado para esta unidade.
+      {/* ══ HISTÓRICO (abaixo do 100dvh, tab pedidos) ═══════════════════════ */}
+      {abaAtiva === "pedidos" && (
+        <div style={{ padding: "32px 16px" }}>
+          <div style={{ borderTop: "1px solid var(--border)", paddingTop: 24, marginBottom: 20 }}>
+            <h2 style={{ fontSize: 16, fontWeight: 700, color: "var(--text)", margin: 0, letterSpacing: -0.2 }}>Histórico de Pedidos</h2>
           </div>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            {pedidosVisiveis.map((p) => {
-              const isExpanded = expandedId === p.id;
-              const isConfirming = confirmingDelete === p.id;
-              const isDeleting = deletingId === p.id;
 
-              return (
-                <div
-                  key={p.id}
-                  style={{
-                    background: "var(--surface)",
-                    border: "1px solid var(--border)",
-                    borderRadius: 10,
-                    overflow: "hidden",
-                    boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
-                  }}
-                >
-                  {/* Card header — clicável para expandir */}
-                  <div
-                    onClick={() => setExpandedId(isExpanded ? null : p.id)}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      flexWrap: "wrap",
-                      gap: 10,
-                      padding: "12px 16px",
-                      cursor: "pointer",
-                      borderBottom: isExpanded ? "1px solid var(--border)" : "none",
-                      background: isExpanded ? "var(--surface-2)" : "var(--surface)",
-                    }}
-                  >
-                    {/* Chevron */}
-                    <span style={{ color: "var(--text-3)", display: "flex", flexShrink: 0 }}>
-                      {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-                    </span>
-
-                    {/* Data */}
-                    <span style={{ fontSize: 13, color: "var(--text-2)", flexShrink: 0 }}>
-                      {formatDateTime(p.data_pedido)}
-                    </span>
-
-                    {/* Status */}
-                    <StatusBadge status={p.status} />
-
-                    {/* Contagem */}
-                    <span style={{ fontSize: 12, color: "var(--text-3)", flexShrink: 0 }}>
-                      {p.purchase_order_items.length} {p.purchase_order_items.length === 1 ? "item" : "itens"}
-                    </span>
-
-                    {/* Ações — stop propagation para não expandir/colapsar */}
-                    <div
-                      style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      {/* Botão PDF */}
-                      <button
-                        type="button"
-                        onClick={() => handlePdfExport(p)}
-                        style={smallBtn()}
-                      >
-                        📄 PDF
-                      </button>
-
-                      {/* Exclusão inline */}
-                      {isConfirming ? (
-                        <>
-                          <label
-                            style={{
-                              display: "flex", alignItems: "center", gap: 6,
-                              fontSize: 12, color: "var(--text-2)", cursor: "pointer", userSelect: "none",
-                            }}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={deleteChecked}
-                              onChange={(e) => setDeleteChecked(e.target.checked)}
-                            />
-                            Confirmar exclusão
-                          </label>
-                          <button
-                            type="button"
-                            onClick={() => { setConfirmingDelete(null); setDeleteChecked(false); }}
-                            style={smallBtn()}
-                          >
-                            Cancelar
-                          </button>
-                          <button
-                            type="button"
-                            disabled={!deleteChecked || isDeleting}
-                            onClick={() => handleDeleteConfirm(p.id)}
-                            style={smallBtn(deleteChecked && !isDeleting, true)}
-                          >
-                            {isDeleting ? "Excluindo…" : "Excluir"}
-                          </button>
-                        </>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => { setConfirmingDelete(p.id); setDeleteChecked(false); }}
-                          style={smallBtn()}
-                        >
-                          🗑️ Excluir
-                        </button>
-                      )}
+          {pedidosVisiveis.length === 0 ? (
+            <div style={{ color: "var(--text-3)", fontSize: 13, textAlign: "center", padding: "24px 0" }}>Nenhum pedido encontrado para esta unidade.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              {pedidosVisiveis.map((p) => {
+                const isExpanded = expandedId === p.id;
+                const isConfirming = confirmingDelete === p.id;
+                const isDeleting = deletingId === p.id;
+                return (
+                  <div key={p.id} style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", boxShadow: "0 1px 3px rgba(0,0,0,0.08)" }}>
+                    <div onClick={() => setExpandedId(isExpanded ? null : p.id)}
+                      style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10, padding: "12px 16px", cursor: "pointer", borderBottom: isExpanded ? "1px solid var(--border)" : "none", background: isExpanded ? "var(--surface-2)" : "var(--surface)" }}>
+                      <span style={{ color: "var(--text-3)", display: "flex", flexShrink: 0 }}>{isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</span>
+                      <span style={{ fontSize: 13, color: "var(--text-2)", flexShrink: 0 }}>{formatDateTime(p.data_pedido)}</span>
+                      <StatusBadge status={p.status} />
+                      <span style={{ fontSize: 12, color: "var(--text-3)", flexShrink: 0 }}>{p.purchase_order_items.length} {p.purchase_order_items.length === 1 ? "item" : "itens"}</span>
+                      <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }} onClick={(e) => e.stopPropagation()}>
+                        <button type="button" onClick={() => handlePdfExport(p)} style={smallBtn()}>📄 PDF</button>
+                        {isConfirming ? (
+                          <>
+                            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-2)", cursor: "pointer" }}>
+                              <input type="checkbox" checked={deleteChecked} onChange={(e) => setDeleteChecked(e.target.checked)} />
+                              Confirmar exclusão
+                            </label>
+                            <button type="button" onClick={() => { setConfirmingDelete(null); setDeleteChecked(false); }} style={smallBtn()}>Cancelar</button>
+                            <button type="button" disabled={!deleteChecked || isDeleting} onClick={() => handleDeleteConfirm(p.id)} style={smallBtn(deleteChecked && !isDeleting, true)}>
+                              {isDeleting ? "Excluindo…" : "Excluir"}
+                            </button>
+                          </>
+                        ) : (
+                          <button type="button" onClick={() => { setConfirmingDelete(p.id); setDeleteChecked(false); }} style={smallBtn()}>🗑️ Excluir</button>
+                        )}
+                      </div>
                     </div>
-                  </div>
-
-                  {/* Card body — expansível */}
-                  {isExpanded && (
-                    <div style={{ padding: "16px 20px" }}>
-                      {p.purchase_order_items.length === 0 ? (
-                        <div style={{ color: "var(--text-3)", fontSize: 13, textAlign: "center", padding: "8px 0" }}>
-                          Sem itens registrados.
-                        </div>
-                      ) : (
-                        Array.from(
-                          groupItemsByCategoria(p.purchase_order_items, produtosPorNome),
-                        ).map(([cat, items]) => (
-                          <div key={cat} style={{ marginBottom: 16 }}>
-                            {/* Título da categoria */}
-                            <div
-                              style={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: 8,
-                                paddingBottom: 6,
-                                marginBottom: 6,
-                                borderBottom: "1px solid var(--border)",
-                              }}
-                            >
-                              <span
-                                style={{
-                                  fontSize: 11,
-                                  fontWeight: 700,
-                                  color: "var(--text-3)",
-                                  textTransform: "uppercase",
-                                  letterSpacing: 0.7,
-                                }}
-                              >
-                                {cat}
-                              </span>
-                              <span style={{ fontSize: 11, color: "var(--text-3)" }}>
-                                ({items.length})
-                              </span>
-                            </div>
-
-                            {/* Linhas de itens */}
-                            {items.map((item: PurchaseOrderItemRow) => (
-                              <div
-                                key={item.id}
-                                style={{
-                                  display: "flex",
-                                  alignItems: "baseline",
-                                  gap: 8,
-                                  padding: "5px 0",
-                                  borderBottom: "1px solid var(--border)",
-                                }}
-                              >
-                                <span style={{ flex: 1, fontSize: 13, color: "var(--text)" }}>
-                                  {item.nome}
-                                </span>
-                                <span style={{ fontSize: 13, fontWeight: 700, color: "var(--text-2)", flexShrink: 0 }}>
-                                  {item.quantidade}
-                                </span>
-                                <span style={{ fontSize: 11, color: "var(--text-3)", width: 28, textAlign: "right", flexShrink: 0 }}>
-                                  {item.unidade ?? ""}
-                                </span>
+                    {isExpanded && (
+                      <div style={{ padding: "16px 20px" }}>
+                        {p.purchase_order_items.length === 0 ? (
+                          <div style={{ color: "var(--text-3)", fontSize: 13, textAlign: "center" }}>Sem itens.</div>
+                        ) : (
+                          Array.from(groupItemsByCategoria(p.purchase_order_items, produtosPorNome)).map(([cat, items]) => (
+                            <div key={cat} style={{ marginBottom: 16 }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 8, paddingBottom: 6, marginBottom: 6, borderBottom: "1px solid var(--border)" }}>
+                                <span style={{ fontSize: 11, fontWeight: 700, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: 0.7 }}>{cat}</span>
+                                <span style={{ fontSize: 11, color: "var(--text-3)" }}>({items.length})</span>
                               </div>
-                            ))}
+                              {items.map((item: PurchaseOrderItemRow) => (
+                                <div key={item.id} style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "5px 0", borderBottom: "1px solid var(--border)" }}>
+                                  <span style={{ flex: 1, fontSize: 13, color: "var(--text)" }}>{item.nome}</span>
+                                  <span style={{ fontSize: 13, fontWeight: 700, color: "var(--text-2)", flexShrink: 0 }}>{item.quantidade}</span>
+                                  <span style={{ fontSize: 11, color: "var(--text-3)", width: 28, textAlign: "right", flexShrink: 0 }}>{item.unidade ?? ""}</span>
+                                </div>
+                              ))}
+                            </div>
+                          ))
+                        )}
+                        {p.observacoes && (
+                          <div style={{ marginTop: 12, background: "var(--surface-2)", border: "1px solid var(--border)", borderLeft: "3px solid var(--text-3)", borderRadius: 6, padding: "10px 12px", fontSize: 13, color: "var(--text-3)", fontStyle: "italic" }}>
+                            Obs: {p.observacoes}
                           </div>
-                        ))
-                      )}
-
-                      {/* Observações */}
-                      {p.observacoes && (
-                        <div
-                          style={{
-                            marginTop: 12,
-                            background: "var(--surface-2)",
-                            border: "1px solid var(--border)",
-                            borderLeft: "3px solid var(--text-3)",
-                            borderRadius: 6,
-                            padding: "10px 12px",
-                            fontSize: 13,
-                            color: "var(--text-3)",
-                            fontStyle: "italic",
-                          }}
-                        >
-                          Obs: {p.observacoes}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

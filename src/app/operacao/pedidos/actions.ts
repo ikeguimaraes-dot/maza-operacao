@@ -150,6 +150,140 @@ export async function criarPedido(
   return { ok: true, data: pedido };
 }
 
+// ── Recebimento ─────────────────────────────────────────────────────────────
+
+export type RecebimentoItemInput = {
+  pedido_item_id: string;
+  nome: string;
+  quantidade_pedida: number;
+  quantidade_recebida: number;
+  unidade: string;
+  observacao?: string;
+};
+
+type RecebimentoItemData = {
+  id: string;
+  pedido_item_id: string;
+  nome: string;
+  quantidade_pedida: number;
+  quantidade_recebida: number;
+  unidade: string | null;
+  status: string;
+  observacao: string | null;
+};
+
+type RecebimentoData = {
+  id: string;
+  pedido_id: string;
+  observacao: string | null;
+  created_at: string;
+  recebimento_itens: RecebimentoItemData[];
+};
+
+export type PedidoParaRecebimento = PedidoComItens & {
+  recebimento: RecebimentoData | null;
+};
+
+export async function getPedidosParaRecebimento(
+  unitId: string,
+): Promise<PedidoParaRecebimento[]> {
+  const supabase = await createSupabaseServerClient();
+  if (!supabase) return [];
+
+  const { data: pedidos, error: pedidoError } = (await supabase
+    .from("purchase_orders" as never)
+    .select("*, purchase_order_items(*)")
+    .eq("unit_id", unitId)
+    .order("created_at", { ascending: false })) as unknown as {
+    data: PedidoComItens[] | null;
+    error: { message: string } | null;
+  };
+
+  if (pedidoError || !pedidos) {
+    console.error("[getPedidosParaRecebimento]", pedidoError?.message);
+    return [];
+  }
+  if (pedidos.length === 0) return [];
+
+  const pedidoIds = pedidos.map((p) => p.id);
+  const { data: recebimentos } = (await supabase
+    .from("recebimentos" as never)
+    .select("*, recebimento_itens(*)")
+    .in("pedido_id", pedidoIds)) as unknown as {
+    data: RecebimentoData[] | null;
+    error: { message: string } | null;
+  };
+
+  const recMap = new Map((recebimentos ?? []).map((r) => [r.pedido_id, r]));
+  return pedidos.map((p) => ({ ...p, recebimento: recMap.get(p.id) ?? null }));
+}
+
+export async function finalizarRecebimento(
+  pedidoId: string,
+  itens: RecebimentoItemInput[],
+  observacao: string | null,
+): Promise<ActionResult<void>> {
+  const user = await requireUser();
+  const unit = await getCurrentUnit();
+  if (!unit) return { ok: false, error: "Nenhuma unidade selecionada." };
+
+  const supabase = await createSupabaseServerClient();
+  if (!supabase) return { ok: false, error: "Supabase indisponível." };
+
+  type RecRow = { id: string };
+  const { data: rec, error: recError } = (await supabase
+    .from("recebimentos" as never)
+    .insert({
+      pedido_id: pedidoId,
+      unit_id: unit.id,
+      recebido_por: user.id,
+      observacao,
+    } as never)
+    .select()
+    .single()) as unknown as { data: RecRow | null; error: { message: string } | null };
+
+  if (recError || !rec) {
+    console.error("[finalizarRecebimento] header", recError?.message);
+    return { ok: false, error: recError?.message ?? "Erro ao criar recebimento." };
+  }
+
+  const itensMapped = itens.map((i) => {
+    const status: "ok" | "parcial" | "nao_recebido" =
+      i.quantidade_recebida <= 0
+        ? "nao_recebido"
+        : i.quantidade_recebida < i.quantidade_pedida
+          ? "parcial"
+          : "ok";
+    return {
+      recebimento_id: rec.id,
+      pedido_item_id: i.pedido_item_id,
+      nome: i.nome,
+      quantidade_pedida: i.quantidade_pedida,
+      quantidade_recebida: i.quantidade_recebida,
+      unidade: i.unidade,
+      status,
+      observacao: i.observacao ?? null,
+    };
+  });
+
+  const { error: itensError } = (await supabase
+    .from("recebimento_itens" as never)
+    .insert(itensMapped as never)) as unknown as { error: { message: string } | null };
+
+  if (itensError) {
+    console.error("[finalizarRecebimento] itens", itensError.message);
+    return { ok: false, error: itensError.message };
+  }
+
+  await (supabase
+    .from("purchase_orders" as never)
+    .update({ status: "recebido" } as never)
+    .eq("id", pedidoId) as unknown as Promise<unknown>);
+
+  revalidatePath("/operacao/pedidos");
+  return { ok: true, data: undefined };
+}
+
 export async function deletarPedido(pedidoId: string): Promise<ActionResult<void>> {
   await requireUser();
   const supabase = await createSupabaseServerClient();

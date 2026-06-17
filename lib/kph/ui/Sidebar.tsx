@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   // shell
-  ChevronDown, ChevronRight, Check, LogOut,
+  ChevronDown, ChevronRight, ChevronLeft, Check, LogOut,
   // dashboard
   LayoutDashboard,
   // operacao
@@ -193,6 +193,7 @@ function flatItems(items: NavItem[], groupId: string): { href: string; groupId: 
 const ALL_NAV_ITEMS = NAV_GROUPS.flatMap((g) => flatItems(g.items, g.id));
 
 const STORAGE_KEY = "kph_sidebar_groups";
+const COLLAPSED_KEY = "sidebar-collapsed";
 const MEET_AND_EAT = "674eac8c-5a38-4a42-aa60-0a666387909b";
 
 // ── Root Sidebar shell ──────────────────────────────────
@@ -200,25 +201,65 @@ export function Sidebar() {
   const pathname = usePathname();
   const { user } = useAuth();
   const { unit, units, setUnit } = useUnit();
-  const [open, setOpen] = useState(false);
+  const [unitOpen, setUnitOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-  const [mobileOpen, setMobileOpen] = useState(false);
+
+  // Collapsed state — persisted to localStorage
+  const [collapsed, setCollapsed] = useState(true); // SSR-safe default
+  const [isMobile, setIsMobile] = useState(false);
+  const [transitionReady, setTransitionReady] = useState(false);
 
   useEffect(() => {
+    const mobile = window.innerWidth < 768;
+    setIsMobile(mobile);
+    try {
+      const stored = window.localStorage.getItem(COLLAPSED_KEY);
+      setCollapsed(stored !== null ? (JSON.parse(stored) as boolean) : mobile);
+    } catch {
+      setCollapsed(mobile);
+    }
+    // Enable transitions after first paint to avoid hydration flash
+    requestAnimationFrame(() => setTransitionReady(true));
+
+    const onResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  function saveCollapsed(next: boolean) {
+    try { window.localStorage.setItem(COLLAPSED_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+  }
+
+  function toggleCollapsed() {
+    setCollapsed((v) => { const n = !v; saveCollapsed(n); return n; });
+  }
+
+  // Unit switcher outside-click
+  useEffect(() => {
     const onClick = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+      if (!ref.current?.contains(e.target as Node)) setUnitOpen(false);
     };
     document.addEventListener("mousedown", onClick);
     return () => document.removeEventListener("mousedown", onClick);
   }, []);
 
+  // Hamburger event from shell header
   useEffect(() => {
-    const onToggle = () => setMobileOpen((v) => !v);
+    const onToggle = () => {
+      setCollapsed((v) => { const n = !v; saveCollapsed(n); return n; });
+    };
     window.addEventListener("kph:toggleSidebar", onToggle);
     return () => window.removeEventListener("kph:toggleSidebar", onToggle);
   }, []);
 
-  useEffect(() => { setMobileOpen(false); }, [pathname]);
+  // Close sidebar on navigation (mobile only)
+  useEffect(() => {
+    if (isMobile && !collapsed) {
+      setCollapsed(true);
+      saveCollapsed(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pathname]);
 
   const initials = user?.email?.slice(0, 2).toUpperCase() ?? "?";
   const emailShort = user?.email
@@ -226,76 +267,168 @@ export function Sidebar() {
     : "—";
   const role = user?.roles[0]?.role ?? "—";
 
+  // On mobile: sidebar is positioned fixed via CSS class; overlay only shows when expanded
+  const mobileExpanded = isMobile && !collapsed;
+  const sidebarWidth = collapsed ? 64 : 240;
+
   return (
     <>
-      <div className={`shell-backdrop ${mobileOpen ? "open" : ""}`} onClick={() => setMobileOpen(false)} />
+      {/* Backdrop — CSS class handles visibility on mobile; also used for new overlay */}
+      <div
+        className={`shell-backdrop ${mobileExpanded ? "open" : ""}`}
+        onClick={() => { setCollapsed(true); saveCollapsed(true); }}
+        style={mobileExpanded ? { zIndex: 39 } : undefined}
+      />
+
       <aside
-        className={`shell-sidebar ${mobileOpen ? "open" : ""}`}
-        style={{ width: 240, flexShrink: 0, background: "var(--sidebar)", borderRight: "1px solid var(--sidebar-border)", display: "flex", flexDirection: "column" }}
+        className={`shell-sidebar ${mobileExpanded ? "open" : ""}`}
+        style={{
+          width: sidebarWidth,
+          flexShrink: 0,
+          background: "var(--sidebar)",
+          borderRight: "1px solid var(--sidebar-border)",
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+          transition: transitionReady ? "width 200ms ease" : "none",
+        }}
       >
-        {/* Logo */}
-        <div style={{ padding: "20px 16px 16px", borderBottom: "1px solid var(--sidebar-border)" }}>
-          <div style={{ fontSize: 20, fontWeight: 700, color: "var(--text)", letterSpacing: -0.5 }}>
-            KPH <span style={{ color: "var(--brand)" }}>OS</span>
+        {/* Logo + Toggle button */}
+        <div style={{
+          padding: "16px 12px",
+          borderBottom: "1px solid var(--sidebar-border)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: collapsed ? "center" : "space-between",
+          minHeight: 64,
+        }}>
+          <div style={{
+            overflow: "hidden",
+            opacity: collapsed ? 0 : 1,
+            maxWidth: collapsed ? 0 : 160,
+            transition: transitionReady ? "opacity 150ms ease, max-width 200ms ease" : "none",
+            whiteSpace: "nowrap",
+          }}>
+            <div style={{ fontSize: 20, fontWeight: 700, color: "var(--text)", letterSpacing: -0.5 }}>
+              KPH <span style={{ color: "var(--brand)" }}>OS</span>
+            </div>
+            <div style={{ fontSize: 10, color: "var(--text-3)", marginTop: 2, letterSpacing: 1.2, textTransform: "uppercase", fontWeight: 600 }}>
+              Operations
+            </div>
           </div>
-          <div style={{ fontSize: 10, color: "var(--text-3)", marginTop: 2, letterSpacing: 1.2, textTransform: "uppercase", fontWeight: 600 }}>
-            Operations
-          </div>
+          <button
+            type="button"
+            onClick={toggleCollapsed}
+            title={collapsed ? "Expandir sidebar" : "Recolher sidebar"}
+            style={{
+              width: 44,
+              height: 44,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              background: "transparent",
+              border: "none",
+              borderRadius: 8,
+              color: "var(--text-3)",
+              cursor: "pointer",
+              flexShrink: 0,
+              transition: "color var(--t)",
+            }}
+          >
+            {collapsed ? <ChevronRight size={18} /> : <ChevronLeft size={18} />}
+          </button>
         </div>
 
         {/* Unit switcher */}
-        <div style={{ padding: "12px 16px" }}>
-          <div ref={ref} style={{ position: "relative" }}>
-            <button
-              onClick={() => setOpen((v) => !v)}
-              disabled={units.length === 0}
-              style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 10, padding: "9px 12px", color: "var(--text)", fontSize: 13, fontWeight: 600, cursor: units.length ? "pointer" : "default", transition: "border-color var(--t)" }}
+        <div style={{
+          padding: collapsed ? "10px 10px" : "12px 16px",
+          transition: transitionReady ? "padding 200ms ease" : "none",
+        }}>
+          {collapsed ? (
+            <div
+              title={unit?.name ?? "Unidade"}
+              style={{ display: "flex", justifyContent: "center" }}
             >
-              <span style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 1, minWidth: 0 }}>
-                <span style={{ fontSize: 9, color: "var(--text-3)", fontWeight: 700, letterSpacing: 0.8 }}>UNIDADE</span>
-                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 160 }}>
-                  {unit?.name ?? (units.length ? "Selecionar…" : "Sem acesso")}
-                </span>
-              </span>
-              <ChevronDown size={14} style={{ color: "var(--text-3)", transform: open ? "rotate(180deg)" : "none", transition: "transform var(--t)" }} />
-            </button>
-            {open && units.length > 0 && (
-              <div style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, right: 0, zIndex: 50, background: "var(--surface-2)", border: "1px solid var(--border-strong)", borderRadius: 10, padding: 4, boxShadow: "var(--shadow-lg)" }}>
-                {units.map((u) => {
-                  const active = u.id === unit?.id;
-                  return (
-                    <button
-                      key={u.id}
-                      onClick={() => { setUnit(u.id); setOpen(false); }}
-                      style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "9px 10px", background: active ? "var(--surface-3)" : "transparent", border: "none", borderRadius: 6, color: "var(--text)", fontSize: 13, fontWeight: 500, cursor: "pointer", textAlign: "left", transition: "background var(--t)" }}
-                    >
-                      <span>{u.name}</span>
-                      {active && <Check size={14} style={{ color: "var(--brand)" }} />}
-                    </button>
-                  );
-                })}
+              <div style={{ width: 36, height: 36, borderRadius: 8, background: "var(--surface-2)", border: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-3)" }}>
+                <Building2 size={16} />
               </div>
-            )}
-          </div>
+            </div>
+          ) : (
+            <div ref={ref} style={{ position: "relative" }}>
+              <button
+                onClick={() => setUnitOpen((v) => !v)}
+                disabled={units.length === 0}
+                style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 10, padding: "9px 12px", color: "var(--text)", fontSize: 13, fontWeight: 600, cursor: units.length ? "pointer" : "default", transition: "border-color var(--t)" }}
+              >
+                <span style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 1, minWidth: 0 }}>
+                  <span style={{ fontSize: 9, color: "var(--text-3)", fontWeight: 700, letterSpacing: 0.8 }}>UNIDADE</span>
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 160 }}>
+                    {unit?.name ?? (units.length ? "Selecionar…" : "Sem acesso")}
+                  </span>
+                </span>
+                <ChevronDown size={14} style={{ color: "var(--text-3)", transform: unitOpen ? "rotate(180deg)" : "none", transition: "transform var(--t)", flexShrink: 0 }} />
+              </button>
+              {unitOpen && units.length > 0 && (
+                <div style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, right: 0, zIndex: 50, background: "var(--surface-2)", border: "1px solid var(--border-strong)", borderRadius: 10, padding: 4, boxShadow: "var(--shadow-lg)" }}>
+                  {units.map((u) => {
+                    const active = u.id === unit?.id;
+                    return (
+                      <button
+                        key={u.id}
+                        onClick={() => { setUnit(u.id); setUnitOpen(false); }}
+                        style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "9px 10px", background: active ? "var(--surface-3)" : "transparent", border: "none", borderRadius: 6, color: "var(--text)", fontSize: 13, fontWeight: 500, cursor: "pointer", textAlign: "left", transition: "background var(--t)" }}
+                      >
+                        <span>{u.name}</span>
+                        {active && <Check size={14} style={{ color: "var(--brand)" }} />}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
-        <SidebarNav pathname={pathname} activeUnitId={unit?.id ?? null} />
+        <SidebarNav pathname={pathname} activeUnitId={unit?.id ?? null} collapsed={collapsed} transitionReady={transitionReady} />
 
         {/* User footer */}
-        <div style={{ padding: "12px 14px", borderTop: "1px solid var(--sidebar-border)", display: "flex", alignItems: "center", gap: 10 }}>
-          <div style={{ position: "relative" }}>
+        <div style={{
+          padding: collapsed ? "12px 10px" : "12px 14px",
+          borderTop: "1px solid var(--sidebar-border)",
+          display: "flex",
+          alignItems: "center",
+          gap: collapsed ? 0 : 10,
+          justifyContent: collapsed ? "center" : "flex-start",
+          transition: transitionReady ? "padding 200ms ease, gap 200ms ease" : "none",
+        }}>
+          <div style={{ position: "relative", flexShrink: 0 }} title={collapsed ? (user?.email ?? "") : undefined}>
             <div style={{ width: 32, height: 32, borderRadius: 99, background: "var(--brand-soft)", color: "var(--brand)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 12 }}>
               {initials}
             </div>
             <span style={{ position: "absolute", right: -1, bottom: -1, width: 10, height: 10, borderRadius: 99, background: "#22C55E", border: "2px solid var(--sidebar)" }} />
           </div>
-          <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{
+            flex: 1,
+            minWidth: 0,
+            overflow: "hidden",
+            opacity: collapsed ? 0 : 1,
+            maxWidth: collapsed ? 0 : 200,
+            transition: transitionReady ? "opacity 150ms ease, max-width 200ms ease" : "none",
+          }}>
             <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{emailShort}</div>
-            <div style={{ fontSize: 10, color: "var(--text-3)" }}>{role}</div>
+            <div style={{ fontSize: 10, color: "var(--text-3)", whiteSpace: "nowrap" }}>{role}</div>
           </div>
-          <Link href="/auth/sign-out" title="Sair" style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 28, height: 28, borderRadius: 6, color: "var(--text-3)", textDecoration: "none", transition: "color var(--t), background var(--t)" }}>
-            <LogOut size={14} />
-          </Link>
+          <div style={{
+            overflow: "hidden",
+            opacity: collapsed ? 0 : 1,
+            maxWidth: collapsed ? 0 : 40,
+            transition: transitionReady ? "opacity 150ms ease, max-width 200ms ease" : "none",
+            flexShrink: 0,
+          }}>
+            <Link href="/auth/sign-out" title="Sair" style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 28, height: 28, borderRadius: 6, color: "var(--text-3)", textDecoration: "none", transition: "color var(--t), background var(--t)" }}>
+              <LogOut size={14} />
+            </Link>
+          </div>
         </div>
       </aside>
     </>
@@ -303,7 +436,17 @@ export function Sidebar() {
 }
 
 // ── SidebarNav ──────────────────────────────────────────
-function SidebarNav({ pathname, activeUnitId }: { pathname: string; activeUnitId: string | null }) {
+function SidebarNav({
+  pathname,
+  activeUnitId,
+  collapsed,
+  transitionReady,
+}: {
+  pathname: string;
+  activeUnitId: string | null;
+  collapsed: boolean;
+  transitionReady: boolean;
+}) {
   const activeHref = useMemo(() => {
     let best: string | null = null;
     let bestLen = -1;
@@ -350,7 +493,7 @@ function SidebarNav({ pathname, activeUnitId }: { pathname: string; activeUnitId
   }
 
   return (
-    <nav style={{ flex: 1, padding: "8px 12px", display: "flex", flexDirection: "column", gap: 4, overflowY: "auto" }}>
+    <nav style={{ flex: 1, padding: collapsed ? "8px 6px" : "8px 12px", display: "flex", flexDirection: "column", gap: 4, overflowY: "auto", transition: transitionReady ? "padding 200ms ease" : "none" }}>
       {NAV_GROUPS.map((g) => (
         <NavGroupSection
           key={g.id}
@@ -360,6 +503,8 @@ function SidebarNav({ pathname, activeUnitId }: { pathname: string; activeUnitId
           isOpen={openMap[g.id] ?? g.defaultOpen}
           hydrated={hydrated}
           onToggle={() => toggleGroup(g.id)}
+          collapsed={collapsed}
+          transitionReady={transitionReady}
         />
       ))}
     </nav>
@@ -368,18 +513,22 @@ function SidebarNav({ pathname, activeUnitId }: { pathname: string; activeUnitId
 
 // ── NavGroupSection ─────────────────────────────────────
 function NavGroupSection({
-  group: g, activeHref, activeUnitId, isOpen, hydrated, onToggle,
+  group: g, activeHref, activeUnitId, isOpen, hydrated, onToggle, collapsed, transitionReady,
 }: {
   group: NavGroup; activeHref: string | null; activeUnitId: string | null;
   isOpen: boolean; hydrated: boolean; onToggle: () => void;
+  collapsed: boolean; transitionReady: boolean;
 }) {
   const hasRole = useHasRole(g.roles ?? []);
   const userRoles = useRoles().map((r): string => r.role);
   if (g.roles && !hasRole) return null;
 
+  // When collapsed: show all items regardless of isOpen (no groups to expand)
+  const showItems = isOpen || collapsed;
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
-      {g.title && (
+      {g.title && !collapsed && (
         <button
           type="button"
           onClick={onToggle}
@@ -391,7 +540,7 @@ function NavGroupSection({
           <ChevronRight size={12} style={{ color: "var(--text-3)", transform: isOpen ? "rotate(90deg)" : "none", transition: hydrated ? "transform var(--t)" : "none" }} />
         </button>
       )}
-      {isOpen && g.items.map((it) => (
+      {showItems && g.items.map((it) => (
         <NavItemRenderer
           key={it.href}
           item={it}
@@ -399,6 +548,8 @@ function NavGroupSection({
           activeUnitId={activeUnitId}
           userRoles={userRoles}
           depth={0}
+          collapsed={collapsed}
+          transitionReady={transitionReady}
         />
       ))}
     </div>
@@ -407,10 +558,10 @@ function NavGroupSection({
 
 // ── NavItemRenderer: leaf link or collapsible submenu ───
 function NavItemRenderer({
-  item, activeHref, activeUnitId, userRoles, depth,
+  item, activeHref, activeUnitId, userRoles, depth, collapsed, transitionReady,
 }: {
   item: NavItem; activeHref: string | null; activeUnitId: string | null;
-  userRoles: string[]; depth: number;
+  userRoles: string[]; depth: number; collapsed: boolean; transitionReady: boolean;
 }) {
   const hasChildren = !!item.children?.length;
 
@@ -432,7 +583,7 @@ function NavItemRenderer({
 
   const Icon = item.icon;
   const active = !hasChildren && item.href === activeHref;
-  const pl = 12 + depth * 12;
+  const pl = collapsed ? 0 : 12 + depth * 12;
 
   if (hasChildren) {
     return (
@@ -440,13 +591,34 @@ function NavItemRenderer({
         <button
           type="button"
           onClick={() => setSubOpen((v) => !v)}
-          style={{ display: "flex", alignItems: "center", gap: 12, width: "100%", padding: `9px 12px 9px ${pl}px`, borderRadius: 8, background: "transparent", border: "none", color: isChildActive ? "var(--text)" : "var(--text-2)", fontSize: 13, fontWeight: isChildActive ? 600 : 500, cursor: "pointer", textAlign: "left", transition: "all var(--t)" }}
+          title={collapsed ? item.label : undefined}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: collapsed ? "center" : "flex-start",
+            gap: collapsed ? 0 : 12,
+            width: "100%",
+            padding: collapsed ? "9px 0" : `9px 12px 9px ${pl}px`,
+            borderRadius: 8,
+            background: "transparent",
+            border: "none",
+            color: isChildActive ? "var(--text)" : "var(--text-2)",
+            fontSize: 13,
+            fontWeight: isChildActive ? 600 : 500,
+            cursor: "pointer",
+            textAlign: "left",
+            transition: transitionReady ? "all var(--t)" : "none",
+          }}
         >
           <Icon size={16} strokeWidth={1.8} style={{ color: "currentColor", flexShrink: 0 }} />
-          <span style={{ flex: 1 }}>{item.label}</span>
-          <ChevronRight size={11} style={{ color: "var(--text-3)", transform: subOpen ? "rotate(90deg)" : "none", transition: "transform var(--t)" }} />
+          {!collapsed && (
+            <>
+              <span style={{ flex: 1 }}>{item.label}</span>
+              <ChevronRight size={11} style={{ color: "var(--text-3)", transform: subOpen ? "rotate(90deg)" : "none", transition: "transform var(--t)" }} />
+            </>
+          )}
         </button>
-        {subOpen && item.children!.map((child) => (
+        {!collapsed && subOpen && item.children!.map((child) => (
           <NavItemRenderer
             key={child.href}
             item={child}
@@ -454,6 +626,8 @@ function NavItemRenderer({
             activeUnitId={activeUnitId}
             userRoles={userRoles}
             depth={depth + 1}
+            collapsed={collapsed}
+            transitionReady={transitionReady}
           />
         ))}
       </div>
@@ -463,13 +637,31 @@ function NavItemRenderer({
   return (
     <Link
       href={item.href}
-      style={{ position: "relative", display: "flex", alignItems: "center", gap: 12, padding: `9px 12px 9px ${pl}px`, borderRadius: 8, textDecoration: "none", color: active ? "var(--text)" : "var(--text-2)", background: active ? "var(--surface-2)" : "transparent", fontSize: 13, fontWeight: active ? 600 : 500, transition: "all var(--t)" }}
+      title={collapsed ? item.label : undefined}
+      style={{
+        position: "relative",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: collapsed ? "center" : "flex-start",
+        gap: collapsed ? 0 : 12,
+        padding: collapsed ? "9px 0" : `9px 12px 9px ${pl}px`,
+        borderRadius: 8,
+        textDecoration: "none",
+        color: active ? "var(--text)" : "var(--text-2)",
+        background: active ? "var(--surface-2)" : "transparent",
+        fontSize: 13,
+        fontWeight: active ? 600 : 500,
+        transition: transitionReady ? "all var(--t)" : "none",
+      }}
     >
-      {active && (
+      {active && !collapsed && (
         <span style={{ position: "absolute", left: -12, top: 6, bottom: 6, width: 3, background: "var(--brand)", borderRadius: "0 4px 4px 0" }} />
       )}
+      {active && collapsed && (
+        <span style={{ position: "absolute", left: 0, top: "50%", transform: "translateY(-50%)", width: 3, height: 20, background: "var(--brand)", borderRadius: "0 4px 4px 0" }} />
+      )}
       <Icon size={16} strokeWidth={active ? 2.2 : 1.8} style={{ color: active ? "var(--brand)" : "currentColor", flexShrink: 0 }} />
-      <span style={{ flex: 1 }}>{item.label}</span>
+      {!collapsed && <span style={{ flex: 1 }}>{item.label}</span>}
     </Link>
   );
 }

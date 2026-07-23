@@ -11,7 +11,7 @@ const REVALIDATE_PATH = "/operacao/manutencao";
 
 // ── Tipos de linha (schema confirmado via information_schema) ────────────────
 
-export type ChamadoStatus = "aberto" | "em_andamento" | "em_aprovacao" | "concluido";
+export type ChamadoStatus = "aberto" | "em_andamento" | "em_aprovacao" | "concluido" | "cancelado";
 export type AprovadoStatus = "SIM" | "NAO" | "PENDENTE";
 
 export type ManutencaoChamadoRow = {

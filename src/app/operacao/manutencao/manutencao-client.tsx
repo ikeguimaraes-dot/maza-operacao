@@ -77,6 +77,7 @@ const STATUS_CHAMADO_CONF: Record<ChamadoStatus, { label: string; background: st
   em_andamento: { label: "Em andamento", background: "#78350F", color: "#FDE68A" },
   em_aprovacao: { label: "Em aprovação", background: "#4C1D95", color: "#D8B4FE" },
   concluido: { label: "Concluído", background: "#14532D", color: "#86EFAC" },
+  cancelado: { label: "Cancelado", background: "var(--surface-3)", color: "var(--text-3)" },
 };
 
 function StatusChamadoBadge({ status }: { status: ChamadoStatus }) {
@@ -235,7 +236,7 @@ export function ManutencaoClient({ chamadosIniciais, aprovacoesIniciais }: Props
     const abertos = chamadosIniciais.filter((c) => c.status === "aberto").length;
     const emAndamento = chamadosIniciais.filter((c) => c.status === "em_andamento").length;
     const concluidosNoMes = chamadosIniciais.filter((c) => c.status === "concluido" && isMesAtual(c.data_execucao)).length;
-    const p0Pendentes = chamadosIniciais.filter((c) => c.prioridade === "P.0" && c.status !== "concluido").length;
+    const p0Pendentes = chamadosIniciais.filter((c) => c.prioridade === "P.0" && c.status !== "concluido" && c.status !== "cancelado").length;
     return { abertos, emAndamento, concluidosNoMes, p0Pendentes };
   }, [chamadosIniciais]);
 
@@ -547,6 +548,7 @@ export function ManutencaoClient({ chamadosIniciais, aprovacoesIniciais }: Props
                 <option value="em_andamento">Em andamento</option>
                 <option value="em_aprovacao">Em aprovação</option>
                 <option value="concluido">Concluído</option>
+                <option value="cancelado">Cancelado</option>
               </select>
               <input type="date" value={chFiltroDataInicio} onChange={(e) => setChFiltroDataInicio(e.target.value)} style={{ ...fieldInput, width: "auto" }} />
               <input type="date" value={chFiltroDataFim} onChange={(e) => setChFiltroDataFim(e.target.value)} style={{ ...fieldInput, width: "auto" }} />
@@ -592,10 +594,10 @@ export function ManutencaoClient({ chamadosIniciais, aprovacoesIniciais }: Props
                         </td>
                         <td style={{ padding: "10px 12px" }}>
                           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                            {c.status !== "concluido" && (
+                            {c.status !== "concluido" && c.status !== "cancelado" && (
                               <button type="button" onClick={() => { setConcluirRowId(concluirRowId === c.id ? null : c.id); setExecutadoPorInput(c.executado_por ?? ""); setDataExecucaoInput(todayInputValue()); }} style={smallActionBtn}>✓ Concluir</button>
                             )}
-                            {c.status !== "em_aprovacao" && c.status !== "concluido" && (
+                            {c.status !== "em_aprovacao" && c.status !== "concluido" && c.status !== "cancelado" && (
                               <button type="button" onClick={() => abrirEnviarAprovacao(c)} style={smallActionBtn}>💰 Enviar p/ Aprovação</button>
                             )}
                             {excluindoChamadoId === c.id ? (

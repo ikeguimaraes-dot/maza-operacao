@@ -100,6 +100,10 @@ kph-os-operacao/
 │   │       │   ├── page.tsx
 │   │       │   ├── performance-client.tsx
 │   │       │   └── actions.ts
+│   │       ├── manutencao/       # Controle de despesas de manutenção (chamados + aprovações)
+│   │       │   ├── page.tsx
+│   │       │   ├── manutencao-client.tsx
+│   │       │   └── actions.ts
 │   │       └── vendedores/       # PLACEHOLDER — em construção
 │   │           └── page.tsx
 │   ├── components/
@@ -108,7 +112,9 @@ kph-os-operacao/
 │   └── lib/
 │       ├── format.ts             # formatBRL, formatDateBR, initials, avatarColor
 │       ├── result.ts             # ActionResult<T> — tipo discriminado para Server Actions
-│       └── utils.ts              # cn() — clsx + tailwind-merge
+│       ├── utils.ts              # cn() — clsx + tailwind-merge
+│       └── manutencao/
+│           └── constants.ts      # OPERACOES, CATEGORIAS, LOCAIS, ANDARES, PRIORIDADES, FORMAS_PAGAMENTO
 ├── next.config.ts                # assetPrefix para /operacao no Vercel
 ├── next-env.d.ts
 ├── package.json
@@ -213,6 +219,19 @@ Tipo `EventStatus`: `"rascunho" | "pendente_aprovacao" | "aprovado" | ... | "can
 | `purchase_orders` | Pedidos de compra | `id, unit_id, brand_id, numero, supplier_id, status, valor_total` |
 | `purchase_order_items` | Itens do pedido | `id, order_id, nome, quantidade, preco_unitario` |
 
+#### Operação — Manutenção
+
+| Tabela | Propósito | Colunas-chave |
+|---|---|---|
+| `manutencao_chamados` | Chamados diários de manutenção (aba "Preenchimento Diário") | `id, unit_id, operacao, categoria, local, andar, prioridade, servico, motivo, data_solicitacao, data_execucao, executado_por, status, valor_previsto, observacoes, criado_por, created_at, updated_at` |
+| `manutencao_aprovacoes` | Aprovações financeiras de serviços de manutenção (avulsas ou promovidas de um chamado) | `id, unit_id, chamado_id, operacao, categoria, local, andar, prioridade, servico, data_solicitacao, valor_previsto, forma_pagamento, numero_parcelas, valor_parcela (GERADA), aprovado, data_aprovacao, aprovado_por, data_execucao, garantia_dias, data_vence_garantia (GERADA), numero_nota_fiscal, observacoes, criado_por, created_at, updated_at` |
+| `manutencao_parcelas` | Parcelamento financeiro de cada aprovação | `id, aprovacao_id, numero, competencia, valor, pago, data_pagamento, comprovante_url, comprovante_nome, created_at` |
+
+Tipo `ChamadoStatus`: `"aberto" | "em_andamento" | "em_aprovacao" | "concluido"`
+Tipo `AprovadoStatus`: `"SIM" | "NAO" | "PENDENTE"`
+
+`valor_parcela` e `data_vence_garantia` são colunas **GENERATED ALWAYS AS ... STORED** — nunca incluídas em `insert()`/`update()`, apenas lidas via `select()`. `manutencao_aprovacoes.chamado_id` é opcional (aprovação avulsa) e independente do `manutencao_chamados.data_execucao`/`status` após a promoção (editar uma não sincroniza com a outra). Bucket de storage: `manutencao-comprovantes`, path `{unit_id}/{aprovacao_id}/{parcela_id}-{nome_arquivo}`.
+
 #### Notificações
 
 | Tabela | Propósito | Colunas-chave |
@@ -265,6 +284,11 @@ erDiagram
     purchase_orders ||--o{ purchase_order_items : "contém"
     suppliers ||--o{ purchase_orders : "fornece para"
 
+    units ||--o{ manutencao_chamados : "tem"
+    units ||--o{ manutencao_aprovacoes : "tem"
+    manutencao_chamados |o--o{ manutencao_aprovacoes : "pode gerar"
+    manutencao_aprovacoes ||--o{ manutencao_parcelas : "parcela em"
+
     financial_periods ||--o{ cash_flow_entries : "contém"
     cash_flow_entries ||--o{ approval_requests : "pode ter"
 
@@ -291,6 +315,7 @@ Não há API Routes HTTP — toda mutação ocorre via **Server Actions** (`"use
 | `/operacao/performance` | Server Page + Client | `performance/page.tsx` + `performance-client.tsx` | KPIs operacionais do mês |
 | `/operacao/eventos` | Server Page | `eventos/page.tsx` | Iframe com SPA de eventos (apenas Meet & Eat) |
 | `/operacao/pessoas/formulario-recrutamento` | Server Page | `pessoas/formulario-recrutamento/page.tsx` | Iframe com SPA Vite de formulário de recrutamento. Restrito a roles `pessoas`, `gm`, `founder` |
+| `/operacao/manutencao` | Server Page + Client | `manutencao/page.tsx` + `manutencao-client.tsx` | Controle de despesas de manutenção: chamados diários e aprovações financeiras parceladas. Restrito à role `operacao` |
 | `/operacao/vendedores` | Server Page | `vendedores/page.tsx` | Placeholder — em construção |
 
 ### Server Actions por Módulo
@@ -317,6 +342,27 @@ Não há API Routes HTTP — toda mutação ocorre via **Server Actions** (`"use
 | Action | Parâmetros | Retorno | Descrição |
 |---|---|---|---|
 | `getPerformanceKpis(unitId, mes, ano)` | `string, number, number` | `PerformanceKpis` | Agrega KPIs do mês: headcount, faltas, HE, score de auditorias |
+
+#### Manutenção (`src/app/operacao/manutencao/actions.ts`)
+
+| Action | Parâmetros | Retorno | Descrição |
+|---|---|---|---|
+| `getChamados(unitId)` | `string` | `ManutencaoChamadoRow[]` | Lista chamados da unit, ordem `data_solicitacao desc` |
+| `criarChamado(dados)` | `NovoChamadoInput` | `ActionResult<ManutencaoChamadoRow>` | Cria chamado com `status: "aberto"` |
+| `atualizarChamado(id, dados)` | `string, AtualizarChamadoInput` | `ActionResult<ManutencaoChamadoRow>` | Update parcial genérico (usado também para concluir: `status/data_execucao/executado_por`) |
+| `excluirChamado(id)` | `string` | `ActionResult<void>` | Exclui chamado |
+| `getAprovacoes(unitId)` | `string` | `AprovacaoComParcelas[]` | Lista aprovações com `manutencao_parcelas` aninhadas, ordenadas por número |
+| `criarAprovacao(dados)` | `NovaAprovacaoInput` | `ActionResult<AprovacaoComParcelas>` | Cria aprovação avulsa (`chamado_id: null`) + gera parcelas mensais |
+| `promoverChamadoParaAprovacao(chamadoId, dadosFinanceiros)` | `string, DadosFinanceirosPromocao` | `ActionResult<AprovacaoComParcelas>` | Cria aprovação vinculada ao chamado (copia operação/categoria/local/andar/prioridade/serviço/data_solicitacao/data_execucao), gera parcelas e marca o chamado como `em_aprovacao` |
+| `definirAprovacao(id, aprovado)` | `string, AprovadoStatus` | `ActionResult<ManutencaoAprovacaoRow>` | Seta `aprovado/data_aprovacao/aprovado_por` |
+| `atualizarAprovacao(id, dados)` | `string, AtualizarAprovacaoInput` | `ActionResult<ManutencaoAprovacaoRow>` | Edita `data_execucao/garantia_dias/numero_nota_fiscal/observacoes` |
+| `excluirAprovacao(id)` | `string` | `ActionResult<void>` | Exclui aprovação e suas parcelas |
+| `marcarParcelaPaga(parcelaId, pago, dataPagamento?)` | `string, boolean, string?` | `ActionResult<ManutencaoParcelaRow>` | Marca parcela paga/não paga |
+| `anexarComprovante(parcelaId, file)` | `string, File` | `ActionResult<{comprovante_url, comprovante_nome}>` | Upload no bucket `manutencao-comprovantes` (PDF/JPG/PNG, máx. 10MB) |
+| `removerComprovante(parcelaId)` | `string` | `ActionResult<void>` | Remove arquivo do storage e limpa as colunas |
+| `gerarUrlComprovante(parcelaId)` | `string` | `ActionResult<string>` | Gera signed URL (300s) para visualizar o comprovante |
+
+Cálculo de parcelas: `competencia` = 1º dia do mês, começando no mês seguinte à `data_solicitacao`; `valor` = `valor_previsto / numero_parcelas`, com a última parcela absorvendo o resíduo de arredondamento para que a soma bata com `valor_previsto`.
 
 ---
 
@@ -364,6 +410,27 @@ type PerformanceKpis = {
 // Eventos
 type EventStatus = "rascunho"|"pendente_aprovacao"|"aprovado"|...|"cancelado"
 type ReservationStatus = "pendente"|"confirmada"|"cancelada"|...
+
+// Manutenção
+type ChamadoStatus  = "aberto"|"em_andamento"|"em_aprovacao"|"concluido"
+type AprovadoStatus = "SIM"|"NAO"|"PENDENTE"
+type ManutencaoChamadoRow = {
+  id, unit_id, operacao, categoria, local, andar, prioridade, servico, motivo,
+  data_solicitacao, data_execucao, executado_por, status: ChamadoStatus,
+  valor_previsto, observacoes, criado_por, created_at, updated_at
+}
+type ManutencaoAprovacaoRow = {
+  id, unit_id, chamado_id, operacao, categoria, local, andar, prioridade, servico,
+  data_solicitacao, valor_previsto, forma_pagamento, numero_parcelas,
+  valor_parcela /* GERADA */, aprovado: AprovadoStatus, data_aprovacao, aprovado_por,
+  data_execucao, garantia_dias, data_vence_garantia /* GERADA */,
+  numero_nota_fiscal, observacoes, criado_por, created_at, updated_at
+}
+type ManutencaoParcelaRow = {
+  id, aprovacao_id, numero, competencia, valor, pago,
+  data_pagamento, comprovante_url, comprovante_nome, created_at
+}
+type AprovacaoComParcelas = ManutencaoAprovacaoRow & { manutencao_parcelas: ManutencaoParcelaRow[] }
 
 // Utilitários
 type ActionResult<T> = { ok: true, data: T } | { ok: false, error: string }

@@ -2,6 +2,8 @@ import { Suspense } from "react";
 import { requireUser } from "@kph/auth/server";
 import { getCurrentUnit } from "@kph/auth/unit";
 import { redirect } from "next/navigation";
+import { getChamados, getAprovacoes } from "./actions";
+import { ManutencaoClient } from "./manutencao-client";
 
 export const dynamic = "force-dynamic";
 
@@ -46,21 +48,16 @@ async function ManutencaoSection() {
     );
   }
 
+  const [chamados, aprovacoes] = await Promise.all([
+    getChamados(unit.id),
+    getAprovacoes(unit.id),
+  ]);
+
   return (
-    <div>
-      <h1 style={{ fontSize: 20, fontWeight: 600, marginBottom: 16 }}>
-        Manutenção
-      </h1>
-      <div
-        style={{
-          color: "var(--text-3)",
-          fontSize: 13,
-          padding: "32px 0",
-          textAlign: "center",
-        }}
-      >
-        Em construção.
-      </div>
-    </div>
+    <ManutencaoClient
+      unit={{ id: unit.id, name: unit.name }}
+      chamadosIniciais={chamados}
+      aprovacoesIniciais={aprovacoes}
+    />
   );
 }

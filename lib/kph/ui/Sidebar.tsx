@@ -9,7 +9,7 @@ import {
   // dashboard
   LayoutDashboard,
   // operacao
-  TrendingUp, MapPin, Activity, UserCheck, ClipboardList, BookOpen,
+  TrendingUp, MapPin, Activity, UserCheck, ClipboardList, BookOpen, Wrench,
   // compras
   ShoppingCart, Package, Truck, Building2, FileText, PackageCheck, PieChart, Star, Carrot,
   // financeiro
@@ -67,6 +67,7 @@ const NAV_GROUPS: NavGroup[] = [
       { href: "/operacao/vendedores",    label: "Vendedores",    icon: UserCheck },
       { href: "/operacao/auditorias",    label: "Auditorias",    icon: ClipboardList },
       { href: "/operacao/pedidos",       label: "Pedidos",       icon: ShoppingCart, roles: ["operacao", "founder", "administrativo"] },
+      { href: "/operacao/manutencao",    label: "Manutenção",    icon: Wrench,       roles: ["operacao"] },
       { href: "/operacao/eventos",       label: "Eventos",       icon: CalendarDays },
       { href: "/operacao/pessoas/formulario-recrutamento", label: "Formulário de Recrutamento", icon: ClipboardList, roles: ["pessoas", "gm", "founder"] },
     ],

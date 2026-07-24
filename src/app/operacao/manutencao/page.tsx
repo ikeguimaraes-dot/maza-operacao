@@ -7,7 +7,7 @@ import { ManutencaoClient } from "./manutencao-client";
 
 export const dynamic = "force-dynamic";
 
-const ROLES_PERMITIDOS = ["operacao"] as const;
+const ROLES_PERMITIDOS = ["operacao", "founder", "administrativo"] as const;
 
 export default async function ManutencaoPage() {
   const user = await requireUser();

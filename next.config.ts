@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  assetPrefix: process.env.VERCEL ? "/operacao" : undefined,
+  assetPrefix: "/operacao",
 };
 
 export default nextConfig;

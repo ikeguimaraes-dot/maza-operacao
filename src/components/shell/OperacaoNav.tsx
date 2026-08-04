@@ -37,7 +37,7 @@ export function OperacaoNav() {
           whiteSpace: "nowrap",
         }}
       >
-        KPH Operação
+        Maza Operação
       </span>
       {LINKS.map(({ href, label, exact }) => {
         const active = exact ? pathname === href : pathname.startsWith(href);

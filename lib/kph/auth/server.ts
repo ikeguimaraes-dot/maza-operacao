@@ -106,7 +106,7 @@ export async function requireUser(): Promise<CurrentUser> {
   const user = await getCurrentUser();
   if (user) return user;
   const shell = process.env.NEXT_PUBLIC_SHELL_URL?.replace(/\/$/, "") ??
-    (process.env.NODE_ENV === "development" ? "http://localhost:3000" : "https://kph-os.vercel.app");
+    (process.env.NODE_ENV === "development" ? "http://localhost:3000" : "https://maza.vercel.app");
   redirect(`${shell}/login`);
 }
 

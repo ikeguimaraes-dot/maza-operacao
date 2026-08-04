@@ -2,7 +2,7 @@
 
 ## 1. VISÃO GERAL DO PROJETO
 
-**Nome:** `kph-os-operacao`
+**Nome:** `maza-operacao`
 
 **Descrição:** Dashboard operacional do Grupo KPH — módulo "Operação" do sistema OS (Operating System) da holding. Permite gerenciar mesas em tempo real, auditorias de qualidade, KPIs de performance operacional e eventos, por unidade (unit) selecionada.
 
@@ -30,7 +30,7 @@
 ## 2. ESTRUTURA DE DIRETÓRIOS
 
 ```
-kph-os-operacao/
+maza-operacao/
 ├── lib/                          # Biblioteca interna compartilhada KPH
 │   └── kph/
 │       ├── auth/                 # Autenticação, sessão, roles, seleção de unit

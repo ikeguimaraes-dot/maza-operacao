@@ -1,15 +1,15 @@
 import { type NextRequest, NextResponse } from "next/server";
 
 export function middleware(request: NextRequest) {
-  const shellUrl = process.env.NEXT_PUBLIC_SHELL_URL ?? "https://maza.vercel.app";
-  const entryHost = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim()
-    ?? request.headers.get("host")?.split(":")[0];
-  const shellHost = new URL(shellUrl).host;
-  const localEntry = entryHost === "localhost" || entryHost === "127.0.0.1";
-  if (!localEntry && entryHost && entryHost !== shellHost) {
-    return NextResponse.redirect(new URL(`${request.nextUrl.pathname}${request.nextUrl.search}`, shellUrl), 302);
-  }
-  return NextResponse.next();
+  const hasSession = request.cookies
+    .getAll()
+    .some((cookie) => cookie.name.includes("auth-token") && cookie.value.length > 0);
+  if (hasSession || process.env.NODE_ENV === "development") return NextResponse.next();
+
+  const shellUrl = process.env.NEXT_PUBLIC_SHELL_URL ?? "https://maza-maza.vercel.app";
+  const login = new URL("/login", shellUrl);
+  login.searchParams.set("next", `${request.nextUrl.pathname}${request.nextUrl.search}`);
+  return NextResponse.redirect(login, 302);
 }
 
 export const config = { matcher: ["/operacao/:path*"] };

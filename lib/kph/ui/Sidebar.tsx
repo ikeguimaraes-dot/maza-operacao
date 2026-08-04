@@ -664,7 +664,7 @@ function SidebarNav({ pathname, groups }: { pathname: string; groups: NavGroup[]
   }
 
   return (
-    <nav style={{ flex: 1, padding: "8px 12px", display: "flex", flexDirection: "column", gap: 4, overflowY: "auto" }}>
+    <nav className="sidebar-nav-scroll" style={{ flex: 1, padding: "8px 12px", display: "flex", flexDirection: "column", gap: 4, overflowY: "auto" }}>
       {groups.map((g) => {
         const isOpen = openMap[g.id] ?? g.defaultOpen;
         return (
@@ -674,7 +674,7 @@ function SidebarNav({ pathname, groups }: { pathname: string; groups: NavGroup[]
               setOpenMap((prev) => prev[g.id] === nextOpen ? prev : { ...prev, [g.id]: nextOpen });
             }}
             style={{ display: "flex", flexDirection: "column", gap: 1 }}>
-            {g.title && (
+            {g.title ? (
               <summary
                 style={{
                   display: "flex", alignItems: "center", gap: 8,
@@ -695,6 +695,8 @@ function SidebarNav({ pathname, groups }: { pathname: string; groups: NavGroup[]
                   }}
                 />
               </summary>
+            ) : (
+              <summary aria-hidden="true" style={{ display: "none" }} />
             )}
 
             {g.items.map((it, idx) => {

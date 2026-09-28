@@ -1,10 +1,9 @@
 import { type NextRequest, NextResponse } from "next/server";
+import { updateSession } from "@kph/db/supabase/proxy";
 
-export function middleware(request: NextRequest) {
-  const hasSession = request.cookies
-    .getAll()
-    .some((cookie) => cookie.name.includes("auth-token") && cookie.value.length > 0);
-  if (hasSession || process.env.NODE_ENV === "development") return NextResponse.next();
+export async function middleware(request: NextRequest) {
+  const { response, user } = await updateSession(request);
+  if (user) return response;
 
   const shellUrl = process.env.NEXT_PUBLIC_SHELL_URL ?? "https://maza-maza.vercel.app";
   const login = new URL("/login", shellUrl);
